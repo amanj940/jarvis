@@ -36,19 +36,71 @@ export default function App() {
   // ── 3. Global Keyboard Shortcuts ─────────────────────────────────────────
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      // Ignore if user is currently typing in an input, textarea, or editable element
       const target = e.target as HTMLElement | null;
+
+      // 1. Escape: Dismiss topmost layer in priority order (always active even if typing)
+      if (e.code === "Escape") {
+        const st = useStore.getState();
+        if (st.confirmQueue.length > 0) {
+          st.popConfirm(st.confirmQueue[0].id);
+          return;
+        }
+        if (st.settingsOpen) {
+          st.closeSettings();
+          return;
+        }
+        if (st.projectsOpen) {
+          st.closeProjects();
+          return;
+        }
+        if (st.monitorOpen) {
+          st.closeMonitor();
+          return;
+        }
+        if (st.holoState.active) {
+          st.dismissHolo("esc_key");
+          return;
+        }
+        return;
+      }
+
+      // 2. Typing Guard: ignore shortcuts while typing in inputs, textareas, selects, or modal dialogs
       if (
         target &&
         (target.tagName === "INPUT" ||
           target.tagName === "TEXTAREA" ||
-          target.isContentEditable)
+          target.tagName === "SELECT" ||
+          target.isContentEditable ||
+          Boolean(target.closest('[role="dialog"]')))
       ) {
         return;
       }
 
-      // Space: Toggle microphone (when not typing)
+      // 3. Modal Guard: ignore Space, F, 1-3 when Settings, Projects, or ConfirmModal are active
+      const st = useStore.getState();
+      const anyModalOpen =
+        st.settingsOpen ||
+        st.projectsOpen ||
+        st.confirmQueue.length > 0 ||
+        Boolean(document.querySelector('[role="dialog"]'));
+
+      if (anyModalOpen) {
+        return;
+      }
+
+      // 4. Clickable Elements Guard: Space must activate buttons/links/summaries without toggling mic
+      const isClickable = Boolean(
+        target &&
+          (target.tagName === "BUTTON" ||
+            target.tagName === "A" ||
+            target.tagName === "SUMMARY" ||
+            target.getAttribute("role") === "button" ||
+            target.closest('button, a, summary, [role="button"]'))
+      );
+
+      // Space: Toggle microphone (when not typing or activating buttons)
       if (e.code === "Space" && !e.repeat) {
+        if (isClickable) return;
         e.preventDefault();
         window.dispatchEvent(new CustomEvent("jarvis:toggle-mic"));
         return;
@@ -65,26 +117,13 @@ export default function App() {
         return;
       }
 
-      // Escape: Dismiss active hologram, engineering monitor, or modals
-      if (e.code === "Escape") {
-        const st = useStore.getState();
-        if (st.monitorOpen) st.closeMonitor();
-        if (st.holoState.active) st.dismissHolo("esc_key");
-        if (st.settingsOpen) st.closeSettings();
-        if (st.projectsOpen) st.closeProjects();
-        return;
-      }
-
       // Number keys 1-3: Quick display mode toggle
       if (e.code === "Digit1") {
-        const st = useStore.getState();
         if (st.holoState.active) st.dismissHolo("key_1");
         if (st.monitorOpen) st.closeMonitor();
       } else if (e.code === "Digit2") {
-        const st = useStore.getState();
         st.openHolo({ active: true, modelId: "cpu", mode: "anatomy3d" });
       } else if (e.code === "Digit3") {
-        const st = useStore.getState();
         if (st.monitorOpen) {
           st.closeMonitor();
         } else {
