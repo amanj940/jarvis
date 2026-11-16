@@ -242,34 +242,40 @@ export default function LivingEntityCore() {
     <div
       className="relative w-full h-full overflow-hidden select-none"
       style={{ touchAction: "none" }}
-      onClick={handleEntityClick}
-      title="انقر لتشغيل أو إيقاف المايكروفون (Click to toggle microphone)"
     >
-      {/* 3D Volumetric Particle Canvas */}
-      <Canvas
-        camera={{ position: [4.8, 3.2, 7.2], fov: 42 }}
-        dpr={[1, 1.5]}
-        frameloop={tabHidden ? "never" : reducedMotion ? "demand" : "always"}
-        gl={{
-          antialias: true,
-          alpha: true,
-          powerPreference: "high-performance",
-        }}
-        className="w-full h-full block cursor-pointer active:cursor-grabbing"
+      {/* ── Co-located Entity Canvas & HUD Rings Container (Above 120px Safe Zone) ── */}
+      <div
+        id="living-entity-container"
+        className="absolute top-0 left-0 right-0 bottom-[120px] flex items-center justify-center overflow-hidden"
+        onClick={handleEntityClick}
+        title="انقر لتشغيل أو إيقاف المايكروفون (Click to toggle microphone)"
       >
-        <VolumetricMorphMesh reducedMotion={reducedMotion} />
-        <OrbitControls
-          target={[0, 0, 0]}
-          enableZoom={false}
-          enablePan={false}
-          rotateSpeed={0.65}
-          dampingFactor={0.08}
-          enableDamping
-        />
-      </Canvas>
+        {/* 3D Volumetric Particle Canvas */}
+        <Canvas
+          camera={{ position: [4.8, 3.2, 7.2], fov: 42 }}
+          dpr={[1, 1.5]}
+          frameloop={tabHidden ? "never" : reducedMotion ? "demand" : "always"}
+          gl={{
+            antialias: true,
+            alpha: true,
+            powerPreference: "high-performance",
+          }}
+          className="w-full h-full block cursor-pointer active:cursor-grabbing"
+        >
+          <VolumetricMorphMesh reducedMotion={reducedMotion} />
+          <OrbitControls
+            target={[0, 0, 0]}
+            enableZoom={false}
+            enablePan={false}
+            rotateSpeed={0.65}
+            dampingFactor={0.08}
+            enableDamping
+          />
+        </Canvas>
 
-      {/* 2D Precision Tactical HUD Rings (Positioned Outside Entity Silhouette) */}
-      <HudRings reducedMotion={reducedMotion} />
+        {/* 2D Precision Tactical HUD Rings (Co-located, matching canvas center exactly) */}
+        <HudRings reducedMotion={reducedMotion} />
+      </div>
 
       {/* Floating Holographic HUD, Telemetry & Subtitle Ribbon */}
       <FloatingHoloHUD />

@@ -357,7 +357,7 @@ export default function FloatingHoloHUD() {
 
       {/* ── 4. CENTER BOTTOM: Cleansed Cinematic Subtitle Ribbon ──────────────── */}
       {subtitleText && (
-        <div className="absolute bottom-20 left-1/2 -translate-x-1/2 w-11/12 max-w-xl z-dialogue pointer-events-auto animate-fadeIn">
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 w-11/12 max-w-xl z-dialogue pointer-events-auto animate-fadeIn">
           <div
             className="hud-corner-box relative px-6 py-3.5 rounded-xl border border-cyan-400/40 shadow-[0_20px_50px_rgba(0,0,0,0.85)] backdrop-blur-2xl text-center"
             style={{

@@ -47,7 +47,9 @@ export default function HudConnectorLines({
     if (svgRect.width <= 0 || svgRect.height <= 0) return;
 
     // Entity stage center
-    const entityEl = document.getElementById("living-entity-stage");
+    const entityEl =
+      document.getElementById("living-entity-container") ||
+      document.getElementById("living-entity-stage");
     if (!entityEl) return;
     const entityRect = entityEl.getBoundingClientRect();
     const entityCenterX = entityRect.left + entityRect.width / 2 - svgRect.left;
