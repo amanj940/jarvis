@@ -74,6 +74,21 @@ export default {
       backgroundSize: {
         grid: "44px 44px",
       },
+      width: {
+        "68": "17rem",
+        "76": "19rem",
+        "84": "21rem",
+        "88": "22rem",
+      },
+      zIndex: {
+        "back": "0",
+        "stage": "10",
+        "rings": "15",
+        "panels": "20",
+        "dialogue": "25",
+        "header": "30",
+        "modal": "50",
+      },
     },
   },
   plugins: [],

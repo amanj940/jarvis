@@ -33,6 +33,14 @@
     0 0 0 1px rgba(125,211,252,0.08) inset,
     0 0 24px -4px rgba(125,211,252,0.18),
     0 0 64px -16px rgba(167,139,250,0.10);
+
+  /* Skin variables - will be updated by JS */
+  --skin-accent: #22D3EE;
+  --skin-accent2: #FBBF24;
+  --skin-accent-rgb: 34,211,238;
+  --skin-accent2-rgb: 251,191,36;
+  --skin-radius: 6px;
+  --skin-brk: 1;
 }
 
 html, body, #root { height: 100%; width: 100%; }
@@ -421,46 +429,52 @@ body::after {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
-   ATMOSPHERE — drifting mesh blobs (used by Atmosphere.tsx)
+   UNIFIED HUD PRIMITIVES — Iron Man / Sci-Fi Instrumented Architecture
    ────────────────────────────────────────────────────────────────────── */
-.atm-blob {
+
+/* Machined Corner Bracket container */
+.hud-corner-box {
+  position: relative;
+}
+.hud-corner-box > b.k {
   position: absolute;
-  border-radius: 50%;
-  filter: blur(48px);
-  opacity: 0.5;
-  mix-blend-mode: screen;
+  width: 10px;
+  height: 10px;
+  pointer-events: none;
+  border-color: rgba(34, 211, 238, 0.45);
+  z-index: 2;
 }
-.atm-blob-1 {
-  top: -10%; left: -8%;
-  width: 55vw; height: 55vw;
-  background: radial-gradient(circle, rgba(125,211,252,0.55), transparent 60%);
-  animation: atm-drift-1 26s ease-in-out infinite;
+.hud-corner-box > b.k.tl { top: 4px; left: 4px; border-top-width: 1.5px; border-left-width: 1.5px; }
+.hud-corner-box > b.k.tr { top: 4px; right: 4px; border-top-width: 1.5px; border-right-width: 1.5px; }
+.hud-corner-box > b.k.bl { bottom: 4px; left: 4px; border-bottom-width: 1.5px; border-left-width: 1.5px; }
+.hud-corner-box > b.k.br { bottom: 4px; right: 4px; border-bottom-width: 1.5px; border-right-width: 1.5px; }
+
+/* Top Edge Particle Beam Hairline */
+.hud-beam-hairline {
+  position: absolute;
+  top: 0;
+  left: 12%;
+  right: 12%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(56, 189, 248, 0.75), transparent);
+  pointer-events: none;
 }
-.atm-blob-2 {
-  bottom: -18%; right: -12%;
-  width: 60vw; height: 60vw;
-  background: radial-gradient(circle, rgba(167,139,250,0.50), transparent 60%);
-  animation: atm-drift-2 32s ease-in-out infinite;
+
+/* Repeating Ruler Track */
+.hud-ruler-track {
+  height: 3px;
+  opacity: 0.35;
+  background-image: repeating-linear-gradient(90deg, #38bdf8 0 1px, transparent 1px 6px);
 }
-.atm-blob-3 {
-  top: 40%; left: 35%;
-  width: 45vw; height: 45vw;
-  background: radial-gradient(circle, rgba(94,234,212,0.18), transparent 60%);
-  animation: atm-drift-3 38s ease-in-out infinite;
-}
-@keyframes atm-drift-1 {
-  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
-  33%      { transform: translate3d(8vw, 6vh, 0) scale(1.12); }
-  66%      { transform: translate3d(-4vw, 10vh, 0) scale(0.92); }
-}
-@keyframes atm-drift-2 {
-  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
-  40%      { transform: translate3d(-10vw, -8vh, 0) scale(1.08); }
-  75%      { transform: translate3d(4vw, -4vh, 0) scale(0.96); }
-}
-@keyframes atm-drift-3 {
-  0%, 100% { transform: translate3d(0, 0, 0) scale(1); opacity: 0.45; }
-  50%      { transform: translate3d(-6vw, -10vh, 0) scale(1.18); opacity: 0.75; }
+
+/* Reduced Motion Override */
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -551,6 +565,51 @@ body::after {
 
 /* ─── Article Reader prose styling — themed cyan/ice editorial type ─── */
 .reader-body { color: rgba(224, 242, 254, 0.92); }
+
+/* ─── SKIN THEMES ─── */
+[data-skin="reactor"] {
+  --skin-accent: #22D3EE;
+  --skin-accent2: #FBBF24;
+  --skin-accent-rgb: 34,211,238;
+  --skin-accent2-rgb: 251,191,36;
+  --skin-radius: 6px;
+  --skin-brk: 1;
+}
+[data-skin="neural"] {
+  --skin-accent: #A78BFA;
+  --skin-accent2: #F0ABFC;
+  --skin-accent-rgb: 167,139,250;
+  --skin-accent2-rgb: 240,171,252;
+  --skin-radius: 18px;
+  --skin-brk: 0;
+}
+[data-skin="plasma"] {
+  --skin-accent: #FB923C;
+  --skin-accent2: #F472B6;
+  --skin-accent-rgb: 251,146,60;
+  --skin-accent2-rgb: 244,114,182;
+  --skin-radius: 26px;
+  --skin-brk: 0;
+}
+[data-skin="wave"] {
+  --skin-accent: #34D399;
+  --skin-accent2: #67E8F9;
+  --skin-accent-rgb: 52,211,153;
+  --skin-accent2-rgb: 103,232,249;
+  --skin-radius: 10px;
+  --skin-brk: 0;
+}
+[data-skin="holo"] {
+  --skin-accent: #BAE6FD;
+  --skin-accent2: #60A5FA;
+  --skin-accent-rgb: 186,230,253;
+  --skin-accent2-rgb: 96,165,250;
+  --skin-radius: 0px;
+  --skin-brk: 1;
+}
+[data-skin="holo"] .holo-panel::before {
+  display: none;
+}
 .reader-body p { margin: 0 0 1.05em; line-height: 1.72; }
 .reader-body p:last-child { margin-bottom: 0; }
 .reader-body h1, .reader-body h2, .reader-body h3, .reader-body h4 {
