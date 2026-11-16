@@ -11,7 +11,7 @@
  * - Real live data only — missing metrics marked as "N/A"
  */
 
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import { useStore } from "../../lib/store";
 import { HudPanel, HudGauge, HudHist } from "../HUD/HudPrimitives";
 import { getHudTheme } from "../../lib/hudTheme";
@@ -103,6 +103,30 @@ export default function FloatingHoloHUD() {
     }
     return null;
   }, [chat, orbState]);
+
+  // Subtitle Ribbon Speech State: active during speech and fades out ~3s after
+  const [ribbonRecentSpeech, setRibbonRecentSpeech] = useState(false);
+  const speechTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (orbState === "speaking") {
+      if (speechTimerRef.current) clearTimeout(speechTimerRef.current);
+      setRibbonRecentSpeech(true);
+    } else if (ribbonRecentSpeech) {
+      speechTimerRef.current = setTimeout(() => {
+        setRibbonRecentSpeech(false);
+      }, 3000);
+    }
+    return () => {
+      if (speechTimerRef.current) clearTimeout(speechTimerRef.current);
+    };
+  }, [orbState, ribbonRecentSpeech]);
+
+  // Rule: Hologram active -> ribbon only.
+  // No hologram -> bubble stays as history; ribbon shows ONLY while speaking and fades out 3s after speech ends.
+  const showRibbon = Boolean(
+    subtitleText && (holoState.active || orbState === "speaking" || ribbonRecentSpeech)
+  );
 
   return (
     <div className="absolute inset-0 pointer-events-none z-panels overflow-hidden select-none font-sans">
@@ -356,7 +380,7 @@ export default function FloatingHoloHUD() {
       )}
 
       {/* ── 4. CENTER BOTTOM: Cleansed Cinematic Subtitle Ribbon ──────────────── */}
-      {subtitleText && (
+      {showRibbon && (
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2 w-11/12 max-w-xl z-dialogue pointer-events-auto animate-fadeIn">
           <div
             className="hud-corner-box relative px-6 py-3.5 rounded-xl border border-cyan-400/40 shadow-[0_20px_50px_rgba(0,0,0,0.85)] backdrop-blur-2xl text-center"
