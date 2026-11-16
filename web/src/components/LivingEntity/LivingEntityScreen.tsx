@@ -28,6 +28,7 @@ import { holoOrchestrator } from "../../lib/holoOrchestrator";
 import ChatDialogue from "./ChatDialogue";
 import HudBackdrop from "./HudBackdrop";
 import HudConnectorLines from "./HudConnectorLines";
+import { useReducedMotion } from "../../lib/useReducedMotion";
 
 
 // ── Topic-Driven 3D Holographic Detection Engine ───────────────────────────
@@ -169,6 +170,7 @@ export default function LivingEntityScreen() {
   const closeMonitor = useStore((s) => s.closeMonitor);
   const holoState = useStore((s) => s.holoState);
   const media = useStore((s) => s.media);
+  const reducedMotion = useReducedMotion();
 
   // Input state
   const [input, setInput] = useState("");
@@ -477,7 +479,7 @@ export default function LivingEntityScreen() {
       {/* ── 2. UNIFIED MAIN STAGE — Sphere + Holo Panel on ONE screen ─────── */}
       <main className="relative flex-1 w-full min-h-0 flex flex-row overflow-hidden">
         {/* Tactical HUD Ray Connector Lines (Panels to Entity Center) */}
-        <HudConnectorLines />
+        <HudConnectorLines reducedMotion={reducedMotion} />
 
         {/* ── LEFT: Living Entity Particle Sphere (always visible) ─────────── */}
         <div

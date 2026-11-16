@@ -33,6 +33,7 @@ import {
 import FloatingHoloHUD from "./FloatingHoloHUD";
 import HudRings from "./HudRings";
 import { getHudTheme, HUD_THEMES } from "../../lib/hudTheme";
+import { useReducedMotion } from "../../lib/useReducedMotion";
 
 // ── Color Schemes per Holographic Model ──────────────────────────────────────
 const MODEL_COLORS: Record<string, { a: string; b: string }> = {
@@ -45,7 +46,7 @@ const MODEL_COLORS: Record<string, { a: string; b: string }> = {
   window:  { a: "#22d3ee", b: "#a855f7" }, // Cyber HUD Cyan & Purple
 };
 
-function VolumetricMorphMesh() {
+function VolumetricMorphMesh({ reducedMotion = false }: { reducedMotion?: boolean }) {
   const { gl, size } = useThree();
   const pointsRef     = useRef<THREE.Points>(null);
   const progressRef   = useRef(1.0);
@@ -148,9 +149,9 @@ function VolumetricMorphMesh() {
       triggerMorph(desiredKey);
     }
 
-    // 3. Progress animation (2.2s fluid transition)
+    // 3. Progress animation (shortened under reducedMotion)
     if (morphingRef.current) {
-      progressRef.current += dt / 2.2;
+      progressRef.current += dt / (reducedMotion ? 0.35 : 2.2);
       if (progressRef.current >= 1.0) {
         progressRef.current = 1.0;
         morphingRef.current = false;
@@ -221,6 +222,7 @@ function VolumetricMorphMesh() {
 // ── Root Living Entity Component ──────────────────────────────────────────────
 export default function LivingEntityCore() {
   const [tabHidden, setTabHidden] = useState(false);
+  const reducedMotion = useReducedMotion();
 
   // Tab visibility: pause render loop when tab is hidden
   useEffect(() => {
@@ -247,7 +249,7 @@ export default function LivingEntityCore() {
       <Canvas
         camera={{ position: [4.8, 3.2, 7.2], fov: 42 }}
         dpr={[1, 1.5]}
-        frameloop={tabHidden ? "never" : "always"}
+        frameloop={tabHidden ? "never" : reducedMotion ? "demand" : "always"}
         gl={{
           antialias: true,
           alpha: true,
@@ -255,7 +257,7 @@ export default function LivingEntityCore() {
         }}
         className="w-full h-full block cursor-pointer active:cursor-grabbing"
       >
-        <VolumetricMorphMesh />
+        <VolumetricMorphMesh reducedMotion={reducedMotion} />
         <OrbitControls
           target={[0, 0, 0]}
           enableZoom={false}
@@ -267,7 +269,7 @@ export default function LivingEntityCore() {
       </Canvas>
 
       {/* 2D Precision Tactical HUD Rings (Positioned Outside Entity Silhouette) */}
-      <HudRings />
+      <HudRings reducedMotion={reducedMotion} />
 
       {/* Floating Holographic HUD, Telemetry & Subtitle Ribbon */}
       <FloatingHoloHUD />
