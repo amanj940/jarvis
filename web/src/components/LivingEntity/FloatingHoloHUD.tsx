@@ -14,6 +14,7 @@
 import { useMemo } from "react";
 import { useStore } from "../../lib/store";
 import { HudPanel, HudGauge, HudHist } from "../HUD/HudPrimitives";
+import { getHudTheme } from "../../lib/hudTheme";
 
 export default function FloatingHoloHUD() {
   const holoState = useStore((s) => s.holoState);
@@ -23,6 +24,7 @@ export default function FloatingHoloHUD() {
   const monitorOpen = useStore((s) => s.monitorOpen);
   const openMonitor = useStore((s) => s.openMonitor);
 
+  const theme = getHudTheme(orbState);
   const mId = holoState.modelId || "cpu";
 
   // Real measured CPU & RAM metrics from store.stats (polled by useSystemStats)
@@ -82,6 +84,7 @@ export default function FloatingHoloHUD() {
               unit="%"
               color="#22d3ee"
               size={54}
+              glowStrength={theme.glowStrength}
               onClick={() => openMonitor("anatomy3d", "cpu")}
               title="انقر لفتح لوحة تفاصيل المعالج (Click for CPU Monitor)"
             />
@@ -91,6 +94,7 @@ export default function FloatingHoloHUD() {
               unit="%"
               color="#38bdf8"
               size={54}
+              glowStrength={theme.glowStrength}
               onClick={() => openMonitor("anatomy3d", "cpu")}
               title="انقر لفتح لوحة تفاصيل الذاكرة (Click for Memory Monitor)"
             />
@@ -100,6 +104,7 @@ export default function FloatingHoloHUD() {
               unit="%"
               color="#f59e0b"
               size={54}
+              glowStrength={theme.glowStrength}
               title="مستوى نشاط الصوت الحالي (Live Audio Activity)"
             />
           </div>

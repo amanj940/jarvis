@@ -112,6 +112,7 @@ export function HudGauge({
   strokeWidth = 3,
   onClick,
   title,
+  glowStrength = 0.6,
 }: {
   label: string;
   value: number | "N/A";
@@ -121,6 +122,7 @@ export function HudGauge({
   strokeWidth?: number;
   onClick?: () => void;
   title?: string;
+  glowStrength?: number;
 }) {
   const r = size / 2 - strokeWidth - 2;
   const circ = 2 * Math.PI * r;
@@ -165,7 +167,7 @@ export function HudGauge({
               strokeLinecap="round"
               style={{
                 transition: "stroke-dashoffset 0.8s cubic-bezier(0.16, 1, 0.3, 1)",
-                filter: `drop-shadow(0 0 5px ${color})`,
+                filter: glowStrength > 0 ? `drop-shadow(0 0 ${Math.round(glowStrength * 8)}px ${color})` : "none",
               }}
             />
           )}
@@ -283,6 +285,8 @@ export function HudPanel({
 
   return (
     <div
+      data-hud-panel="true"
+      data-panel-id={id || "panel"}
       onClick={(e) => e.stopPropagation()}
       className={`hud-corner-box relative p-3.5 rounded-lg border border-cyan-500/25 shadow-[0_16px_40px_rgba(0,0,0,0.65)] backdrop-blur-2xl transition-all duration-300 hover:border-cyan-400/50 ${className}`}
       style={{

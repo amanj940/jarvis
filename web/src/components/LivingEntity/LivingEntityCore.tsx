@@ -31,6 +31,7 @@ import {
   particleMorphFragmentShader,
 } from "./shaders/particleMorphShaders";
 import FloatingHoloHUD from "./FloatingHoloHUD";
+import { getHudTheme, HUD_THEMES } from "../../lib/hudTheme";
 
 // ── Color Schemes per Holographic Model ──────────────────────────────────────
 const MODEL_COLORS: Record<string, { a: string; b: string }> = {
@@ -41,16 +42,6 @@ const MODEL_COLORS: Record<string, { a: string; b: string }> = {
   shield:  { a: "#f59e0b", b: "#ef4444" }, // Amber Energy & Crimson Lock
   reactor: { a: "#fbbf24", b: "#f97316" }, // Stark Arc Core & Plasma Orange
   window:  { a: "#22d3ee", b: "#a855f7" }, // Cyber HUD Cyan & Purple
-};
-
-const ORB_COLORS: Record<string, { a: string; b: string }> = {
-  idle:      { a: "#e8b86a", b: "#ffd580" },
-  listening: { a: "#22d3ee", b: "#67e8f9" },
-  thinking:  { a: "#fbbf24", b: "#fde68a" },
-  speaking:  { a: "#fff0a0", b: "#ffec99" },
-  executing: { a: "#60a5fa", b: "#93c5fd" },
-  error:     { a: "#f87171", b: "#fca5a5" },
-  offline:   { a: "#475569", b: "#334155" },
 };
 
 function VolumetricMorphMesh() {
@@ -97,8 +88,8 @@ function VolumetricMorphMesh() {
         uResolution: { value: new THREE.Vector2(size.width * dpr, size.height * dpr) },
         uProgress:   { value: 1.0 },
         uExplode:    { value: 0.0 },
-        uColorA:     { value: new THREE.Color(ORB_COLORS.idle.a) },
-        uColorB:     { value: new THREE.Color(ORB_COLORS.idle.b) },
+        uColorA:     { value: new THREE.Color(HUD_THEMES.idle.entityColors.a) },
+        uColorB:     { value: new THREE.Color(HUD_THEMES.idle.entityColors.b) },
         uTime:       { value: 0 },
       },
     });
@@ -177,8 +168,8 @@ function VolumetricMorphMesh() {
     );
 
     // 5. Dynamic Holographic & Orb Colors
-    let targetA = new THREE.Color(ORB_COLORS.idle.a);
-    let targetB = new THREE.Color(ORB_COLORS.idle.b);
+    let targetA = new THREE.Color(HUD_THEMES.idle.entityColors.a);
+    let targetB = new THREE.Color(HUD_THEMES.idle.entityColors.b);
 
     if (holo.active && MODEL_COLORS[holo.modelId]) {
       targetA.set(MODEL_COLORS[holo.modelId].a);
@@ -187,7 +178,7 @@ function VolumetricMorphMesh() {
       const stateKey = !connected ? "offline"
         : hasTool && orbState === "idle" ? "executing"
         : orbState || "idle";
-      const orbScheme = ORB_COLORS[stateKey] || ORB_COLORS.idle;
+      const orbScheme = getHudTheme(stateKey).entityColors;
       targetA.set(orbScheme.a);
       targetB.set(orbScheme.b);
     }
@@ -246,7 +237,8 @@ function OrbitalRings() {
   useFrame((_, delta) => {
     const dt = Math.min(delta, 0.05);
     const { orbState, holoState } = useStore.getState();
-    const speed = orbState === "thinking" ? 1.4 : 0.3;
+    const theme = getHudTheme(orbState);
+    const speed = theme.ringSpeedMultiplier;
     const opacityTarget = holoState.active ? 0.06 : 0.14;
 
     if (r1.current) {

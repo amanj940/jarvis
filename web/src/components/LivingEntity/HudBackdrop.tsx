@@ -10,11 +10,13 @@
 
 import { useEffect, useState } from "react";
 import { useStore } from "../../lib/store";
+import { getHudTheme } from "../../lib/hudTheme";
 
 export default function HudBackdrop() {
   const orbState = useStore((s) => s.orbState);
   const connected = useStore((s) => s.connected);
   const [now, setNow] = useState(() => new Date());
+  const theme = getHudTheme(orbState);
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -59,13 +61,17 @@ export default function HudBackdrop() {
         <span
           className="w-1.5 h-1.5 rounded-full"
           style={{
-            backgroundColor: connected ? "#22d3ee" : "#ef4444",
-            boxShadow: connected ? "0 0 6px #22d3ee" : "0 0 4px #ef4444",
+            backgroundColor: connected ? theme.accentColor : "#ef4444",
+            boxShadow: connected
+              ? `0 0 ${Math.round(8 * theme.glowStrength)}px ${theme.accentColor}`
+              : "0 0 4px #ef4444",
           }}
         />
         <span>SYS {now.toLocaleTimeString("en-GB")}</span>
         <span className="text-cyan-500/30">|</span>
-        <span className="uppercase">{String(orbState || "idle")}</span>
+        <span className="uppercase" style={{ color: theme.accentColor }}>
+          {theme.name}
+        </span>
       </div>
     </div>
   );
