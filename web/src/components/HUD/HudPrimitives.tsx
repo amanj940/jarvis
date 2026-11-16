@@ -129,7 +129,12 @@ export function HudGauge({
 
   return (
     <div
-      onClick={onClick}
+      onClick={(e) => {
+        if (onClick) {
+          e.stopPropagation();
+          onClick();
+        }
+      }}
       className={`flex flex-col items-center gap-1.5 ${
         onClick ? "cursor-pointer group hover:opacity-100 transition" : ""
       }`}
@@ -262,7 +267,8 @@ export function HudPanel({
     }
   });
 
-  const toggle = () => {
+  const toggle = (e?: React.MouseEvent) => {
+    e?.stopPropagation();
     if (!collapsible) return;
     const next = !isOpen;
     setIsOpen(next);
@@ -277,6 +283,7 @@ export function HudPanel({
 
   return (
     <div
+      onClick={(e) => e.stopPropagation()}
       className={`hud-corner-box relative p-3.5 rounded-lg border border-cyan-500/25 shadow-[0_16px_40px_rgba(0,0,0,0.65)] backdrop-blur-2xl transition-all duration-300 hover:border-cyan-400/50 ${className}`}
       style={{
         background:

@@ -26,6 +26,7 @@ import Model3DViewer from "../Media/Model3DViewer";
 import NeuralGalaxy from "../Media/NeuralGalaxy";
 import { holoOrchestrator } from "../../lib/holoOrchestrator";
 import ChatDialogue from "./ChatDialogue";
+import HudBackdrop from "./HudBackdrop";
 
 
 // ── Topic-Driven 3D Holographic Detection Engine ───────────────────────────
@@ -330,6 +331,9 @@ export default function LivingEntityScreen() {
         fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
       }}
     >
+      {/* ── 0. TACTICAL HUD INSTRUMENT GRID ────────────────────────────────── */}
+      <HudBackdrop />
+
       {/* ── 1. MINIMAL HEADER ──────────────────────────────────────────────── */}
       <header className="relative z-30 flex items-center justify-between px-6 py-3.5 pointer-events-auto border-b border-cyan-500/10 bg-slate-950/40 backdrop-blur-md">
         {/* Left: Brand Identity + Live State */}
@@ -494,12 +498,6 @@ export default function LivingEntityScreen() {
             </div>
           )}
 
-          {/* ── Contextual Dialogue & Message Bubbles (Hidden during active 3D Hologram) ── */}
-          <ChatDialogue
-            dialogueVisible={dialogueVisible && !holoState.active}
-            onDismiss={() => setDialogueVisible(false)}
-          />
-
         </div>
 
         {/* ── RIGHT: Holographic Engineering Panel (slides in on same screen) ─ */}
@@ -514,6 +512,12 @@ export default function LivingEntityScreen() {
             <EngineeringMonitor onClose={closeMonitor} embedded={true} />
           </div>
         )}
+
+        {/* ── Contextual Dialogue & Message Bubbles (Fixed Left Dock above Input) ── */}
+        <ChatDialogue
+          dialogueVisible={dialogueVisible && !holoState.active}
+          onDismiss={() => setDialogueVisible(false)}
+        />
       </main>
 
       <footer className="relative z-30 pb-4 pt-1 flex flex-col items-start gap-2 pointer-events-auto pl-4 md:pl-6">
