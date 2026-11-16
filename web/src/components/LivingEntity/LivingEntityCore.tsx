@@ -31,6 +31,7 @@ import {
   particleMorphFragmentShader,
 } from "./shaders/particleMorphShaders";
 import FloatingHoloHUD from "./FloatingHoloHUD";
+import HudRings from "./HudRings";
 import { getHudTheme, HUD_THEMES } from "../../lib/hudTheme";
 
 // ── Color Schemes per Holographic Model ──────────────────────────────────────
@@ -217,54 +218,6 @@ function VolumetricMorphMesh() {
   );
 }
 
-// ── Cinematic Orbital HUD Rings (Pure Visual) ─────────────────────────────────
-function OrbitalRings() {
-  const r1 = useRef<THREE.LineLoop>(null);
-  const r2 = useRef<THREE.LineLoop>(null);
-
-  const { g1, g2 } = useMemo(() => {
-    const pts = (r: number, n = 72) => {
-      const p: THREE.Vector3[] = [];
-      for (let i = 0; i < n; i++) {
-        const th = (i / n) * Math.PI * 2;
-        p.push(new THREE.Vector3(r * Math.cos(th), 0, r * Math.sin(th)));
-      }
-      return new THREE.BufferGeometry().setFromPoints(p);
-    };
-    return { g1: pts(3.2), g2: pts(3.6) };
-  }, []);
-
-  useFrame((_, delta) => {
-    const dt = Math.min(delta, 0.05);
-    const { orbState, holoState } = useStore.getState();
-    const theme = getHudTheme(orbState);
-    const speed = theme.ringSpeedMultiplier;
-    const opacityTarget = holoState.active ? 0.06 : 0.14;
-
-    if (r1.current) {
-      r1.current.rotation.y += dt * speed;
-      r1.current.rotation.x = 0.22;
-      (r1.current.material as THREE.LineBasicMaterial).opacity = opacityTarget;
-    }
-    if (r2.current) {
-      r2.current.rotation.y -= dt * speed * 0.65;
-      r2.current.rotation.z = 0.14;
-      (r2.current.material as THREE.LineBasicMaterial).opacity = opacityTarget * 0.75;
-    }
-  });
-
-  return (
-    <group>
-      <lineLoop ref={r1} geometry={g1}>
-        <lineBasicMaterial color="#22d3ee" transparent opacity={0.14} />
-      </lineLoop>
-      <lineLoop ref={r2} geometry={g2}>
-        <lineBasicMaterial color="#e8b86a" transparent opacity={0.10} />
-      </lineLoop>
-    </group>
-  );
-}
-
 // ── Root Living Entity Component ──────────────────────────────────────────────
 export default function LivingEntityCore() {
   const [tabHidden, setTabHidden] = useState(false);
@@ -303,7 +256,6 @@ export default function LivingEntityCore() {
         className="w-full h-full block cursor-pointer active:cursor-grabbing"
       >
         <VolumetricMorphMesh />
-        <OrbitalRings />
         <OrbitControls
           target={[0, 0, 0]}
           enableZoom={false}
@@ -313,6 +265,9 @@ export default function LivingEntityCore() {
           enableDamping
         />
       </Canvas>
+
+      {/* 2D Precision Tactical HUD Rings (Positioned Outside Entity Silhouette) */}
+      <HudRings />
 
       {/* Floating Holographic HUD, Telemetry & Subtitle Ribbon */}
       <FloatingHoloHUD />
