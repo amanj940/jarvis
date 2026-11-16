@@ -238,7 +238,9 @@ export interface HudPanelProps {
   histLevels?: number[];
   collapsible?: boolean;
   defaultOpen?: boolean;
+  pinnable?: boolean;
   onExpand?: () => void;
+  onPinChange?: (pinned: boolean) => void;
   className?: string;
   children?: React.ReactNode;
 }
@@ -253,11 +255,14 @@ export function HudPanel({
   histLevels,
   collapsible = false,
   defaultOpen = true,
+  pinnable = false,
   onExpand,
+  onPinChange,
   className = "",
   children,
 }: HudPanelProps) {
   const storageKey = id ? `jarvis_hud_${id}_open` : null;
+  const pinKey = id ? `jarvis_hud_${id}_pinned` : null;
 
   const [isOpen, setIsOpen] = useState<boolean>(() => {
     if (!collapsible || !storageKey) return defaultOpen;
@@ -266,6 +271,15 @@ export function HudPanel({
       return saved !== null ? saved === "1" : defaultOpen;
     } catch {
       return defaultOpen;
+    }
+  });
+
+  const [isPinned, setIsPinned] = useState<boolean>(() => {
+    if (!pinnable || !pinKey) return false;
+    try {
+      return localStorage.getItem(pinKey) === "1";
+    } catch {
+      return false;
     }
   });
 
@@ -283,12 +297,31 @@ export function HudPanel({
     }
   };
 
+  const togglePin = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!pinnable) return;
+    const next = !isPinned;
+    setIsPinned(next);
+    if (pinKey) {
+      try {
+        localStorage.setItem(pinKey, next ? "1" : "0");
+      } catch {
+        /* noop */
+      }
+    }
+    onPinChange?.(next);
+    window.dispatchEvent(
+      new CustomEvent("jarvis:hud-pin-toggle", { detail: { id, pinned: next } })
+    );
+  };
+
   return (
     <div
       data-hud-panel="true"
       data-panel-id={id || "panel"}
+      data-panel-pinned={isPinned ? "true" : undefined}
       onClick={(e) => e.stopPropagation()}
-      className={`hud-corner-box relative p-3.5 rounded-lg border border-cyan-500/25 shadow-[0_16px_40px_rgba(0,0,0,0.65)] backdrop-blur-2xl transition-all duration-300 hover:border-cyan-400/50 ${className}`}
+      className={`hud-corner-box relative p-3.5 rounded-lg border border-cyan-500/25 shadow-[0_16px_40px_rgba(0,0,0,0.65)] backdrop-blur-2xl transition-all duration-300 hover:border-cyan-400/60 hover:shadow-[0_0_24px_rgba(34,211,238,0.25)] ${className}`}
       style={{
         background:
           "linear-gradient(158deg, rgba(12, 18, 30, 0.92) 0%, rgba(3, 7, 14, 0.96) 100%)",
@@ -302,7 +335,10 @@ export function HudPanel({
       <HudCornerBrackets color={`${color}88`} />
 
       {/* Eyebrow Header */}
-      <div className="flex items-center gap-2 mb-1.5 select-none">
+      <div
+        className={`flex items-center gap-2 mb-1.5 select-none ${collapsible ? "cursor-pointer" : ""}`}
+        onClick={collapsible ? toggle : undefined}
+      >
         <span
           className="w-1.5 h-1.5 rounded-full flex-shrink-0 animate-pulse"
           style={{ backgroundColor: color, boxShadow: `0 0 8px ${color}` }}
@@ -314,6 +350,20 @@ export function HudPanel({
           {title}
         </span>
         <div className="hud-ruler-track flex-1" />
+
+        {pinnable && (
+          <button
+            onClick={togglePin}
+            className={`text-[10px] px-1 transition cursor-pointer ${
+              isPinned
+                ? "text-amber-400 opacity-100 drop-shadow-[0_0_6px_rgba(251,191,36,0.6)]"
+                : "text-slate-500 hover:text-slate-300 opacity-60"
+            }`}
+            title={isPinned ? "إلغاء تثبيت اللوحة (Pinned - stays visible)" : "تثبيت اللوحة (Pin panel to keep visible)"}
+          >
+            📌
+          </button>
+        )}
 
         {collapsible && (
           <button
