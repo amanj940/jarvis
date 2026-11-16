@@ -484,8 +484,12 @@ export default function LivingEntityScreen() {
         {/* ── LEFT: Living Entity Particle Sphere (always visible) ─────────── */}
         <div
           id="living-entity-stage"
-          className="relative flex items-center justify-center transition-all duration-700 ease-in-out min-h-0"
-          style={{ flex: monitorOpen ? "0 0 36%" : "1 1 100%" }}
+          className="relative flex items-center justify-center transition-all duration-700 ease-in-out min-h-0 min-w-0"
+          style={{
+            flex: monitorOpen ? "0 0 36%" : "1 1 100%",
+            width: monitorOpen ? "36%" : "100%",
+            maxWidth: monitorOpen ? "36%" : "100%",
+          }}
         >
           <LivingEntityCore />
 
