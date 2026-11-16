@@ -27,6 +27,7 @@ import NeuralGalaxy from "../Media/NeuralGalaxy";
 import { holoOrchestrator } from "../../lib/holoOrchestrator";
 import ChatDialogue from "./ChatDialogue";
 import HudBackdrop from "./HudBackdrop";
+import HudConnectorLines from "./HudConnectorLines";
 
 
 // ── Topic-Driven 3D Holographic Detection Engine ───────────────────────────
@@ -475,9 +476,12 @@ export default function LivingEntityScreen() {
 
       {/* ── 2. UNIFIED MAIN STAGE — Sphere + Holo Panel on ONE screen ─────── */}
       <main className="relative flex-1 w-full min-h-0 flex flex-row overflow-hidden">
+        {/* Tactical HUD Ray Connector Lines (Panels to Entity Center) */}
+        <HudConnectorLines />
 
         {/* ── LEFT: Living Entity Particle Sphere (always visible) ─────────── */}
         <div
+          id="living-entity-stage"
           className="relative flex items-center justify-center transition-all duration-700 ease-in-out min-h-0"
           style={{ flex: monitorOpen ? "0 0 36%" : "1 1 100%" }}
         >
