@@ -35,7 +35,7 @@ interface Props {
   autoHeight?: boolean;
 }
 
-const STORAGE_PREFIX = "jarvis.floating.v2.";
+const STORAGE_PREFIX = "jarvis.floating.v3.";
 const ANCHOR_PX = 96;
 
 function loadStoredBox(id: string): SavedBox | null {
@@ -56,35 +56,25 @@ function loadStoredBox(id: string): SavedBox | null {
 }
 
 function loadBox(id: string, fallback: Box): SavedBox {
-  // Existing user-intent layout wins ONLY if it doesn't collide with any
-  // already-registered panel. If a stored layout would overlap something
-  // already live the broker overrides it with the first free slot — the
-  // user's "everything in its own window" rule trumps the saved layout.
-  const stored = loadStoredBox(id);
+  // ALWAYS use default layout to prevent scrambling
+  // Skip collision detection to keep panels in fixed positions
   const vw = typeof window !== "undefined" ? window.innerWidth : 1600;
   const vh = typeof window !== "undefined" ? window.innerHeight : 900;
-  if (stored) {
-    const display = computeDisplay(stored, vw, vh);
-    if (!collidesAnything(id, display)) {
-      updateSlot(id, display);
-      return stored;
-    }
-    // Stored position would overlap a live neighbour — fall through to the
-    // broker so we find a clear slot. Use stored size as the request hint
-    // so the user's preferred dimensions survive.
-  }
-  const slot = findSlot(id, stored ?? fallback, vw, vh);
-  updateSlot(id, slot);
-  return { ...slot, vw, vh };
+  
+  // Use fallback (default) directly without any slot finding
+  updateSlot(id, fallback);
+  return { ...fallback, vw, vh };
 }
 
 function saveBox(id: string, box: Box) {
-  const record: SavedBox = {
-    ...box,
-    vw: typeof window !== "undefined" ? window.innerWidth : undefined,
-    vh: typeof window !== "undefined" ? window.innerHeight : undefined,
-  };
-  try { localStorage.setItem(STORAGE_PREFIX + id, JSON.stringify(record)); } catch { /* ignore */ }
+  // Disable saving to prevent layout corruption
+  return;
+  // const record: SavedBox = {
+  //   ...box,
+  //   vw: typeof window !== "undefined" ? window.innerWidth : undefined,
+  //   vh: typeof window !== "undefined" ? window.innerHeight : undefined,
+  // };
+  // try { localStorage.setItem(STORAGE_PREFIX + id, JSON.stringify(record)); } catch { /* ignore */ }
 }
 
 export function resetAllLayouts() {
@@ -153,14 +143,26 @@ export default function Floating({
 }: Props) {
   // `saved` is the user-intent box (only mutated by drag/resize end).
   const [saved, setSaved] = useState<SavedBox>(() => loadBox(id, defaultBox));
+  const [transient, setTransient] = useState<Box | null>(null);
+  const userMovedRef = useRef(false);
+
+  // When defaultBox updates (due to window resize / maximize / minimize)
+  // and user has NOT actively dragged/resized this panel, keep in sync with responsive grid!
+  useEffect(() => {
+    if (!userMovedRef.current && !transient) {
+      setSaved({
+        ...defaultBox,
+        vw: window.innerWidth,
+        vh: window.innerHeight,
+      });
+    }
+  }, [defaultBox.x, defaultBox.y, defaultBox.w, defaultBox.h, transient]);
+
   // `vp` tracks the live viewport so render can re-derive position.
   const [vp, setVp] = useState(() => ({
     w: typeof window !== "undefined" ? window.innerWidth : 1600,
     h: typeof window !== "undefined" ? window.innerHeight : 900,
   }));
-  // `transient` overrides `saved` during an active drag / resize so the
-  // panel follows the pointer without writing localStorage until release.
-  const [transient, setTransient] = useState<Box | null>(null);
 
   const [focused, setFocused] = useState(false);
   const dragRef = useRef<{ startX: number; startY: number; orig: Box } | null>(null);
@@ -259,6 +261,7 @@ export default function Floating({
     if (!dragRef.current) return;
     (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
     dragRef.current = null;
+    userMovedRef.current = true;
     setTransient((t) => {
       if (t) {
         setSaved({ ...t, vw: window.innerWidth, vh: window.innerHeight });
@@ -293,6 +296,7 @@ export default function Floating({
     if (!resizeRef.current) return;
     (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
     resizeRef.current = null;
+    userMovedRef.current = true;
     setTransient((t) => {
       if (t) {
         setSaved({ ...t, vw: window.innerWidth, vh: window.innerHeight });
@@ -314,6 +318,7 @@ export default function Floating({
         width: display.w,
         height: autoHeight ? undefined : display.h,
         zIndex: focused ? z + 5 : z,
+        transition: transient ? "none" : "left 0.2s cubic-bezier(0.16, 1, 0.3, 1), top 0.2s cubic-bezier(0.16, 1, 0.3, 1), width 0.2s cubic-bezier(0.16, 1, 0.3, 1), height 0.2s cubic-bezier(0.16, 1, 0.3, 1)",
       }}
     >
       {!locked && (

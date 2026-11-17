@@ -4,8 +4,8 @@
  * Degrades silently if the API is missing.
  */
 import { useStore, type VoiceProfile } from "./store";
-import { getHealth } from "./api";
-import { detectWake, stripWakeWord, normalizeWakeWord } from "./wakeWord";
+import { getHealth, API_BASE } from "./api";
+import { detectWake, stripWakeWord, normalizeWakeWord, isLiveStartCommand, isLiveStopCommand } from "./wakeWord";
 
 function configuredWakeWord(): string {
   return normalizeWakeWord(useStore.getState().health?.voice?.wake_word);
@@ -51,11 +51,125 @@ let ttsPlaying = false;
 let activeUrl: string | null = null;
 const playerAudio: HTMLAudioElement | null =
   typeof Audio !== "undefined" ? new Audio() : null;
+let audioWakeupPlayed = false; // Flag to play wakeup audio once
+
+// ── Genuine Assistant Output Audio Amplitude Analyser ────────────────────────
+let ttsAudioContext: AudioContext | null = null;
+let ttsAnalyser: AnalyserNode | null = null;
+let ttsSourceNode: MediaElementAudioSourceNode | null = null;
+let ttsAnalyserRaf: number = 0;
+const ttsFreqData = new Uint8Array(256);
+
+function ensureTtsAudioAnalysis(): void {
+  // STRICT SAFETY: AudioContext.createMediaElementSource throws if called more
+  // than once on the same HTMLAudioElement instance. Guard with ttsSourceNode check.
+  if (!playerAudio || ttsSourceNode) return;
+  try {
+    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioCtx) return;
+    ttsAudioContext = new AudioCtx();
+    ttsAnalyser = ttsAudioContext.createAnalyser();
+    ttsAnalyser.fftSize = 512;  // higher resolution for particle frequency mapping
+    ttsAnalyser.smoothingTimeConstant = 0.78;
+    ttsSourceNode = ttsAudioContext.createMediaElementSource(playerAudio);
+    ttsSourceNode.connect(ttsAnalyser);
+    ttsAnalyser.connect(ttsAudioContext.destination);
+    // Expose analyser globally so LivingEntityCore can read frequency data
+    // without direct module coupling. Zero-cost: just a window property assignment.
+    (window as any).__jarvisTtsAnalyser = ttsAnalyser;
+    console.log("[TTS:analyser] Web Audio output amplitude analyser successfully connected.");
+  } catch (e) {
+    console.warn("[TTS:analyser] Web Audio setup warning:", e);
+  }
+}
+
+
+function startTtsAmplitudeTracking(): void {
+  if (ttsAnalyserRaf) cancelAnimationFrame(ttsAnalyserRaf);
+  const tick = () => {
+    if (!ttsPlaying || !ttsAnalyser) {
+      useStore.getState().setSpeakerAudioLevel(0);
+      ttsAnalyserRaf = 0;
+      return;
+    }
+    ttsAnalyser.getByteFrequencyData(ttsFreqData);
+    let sum = 0;
+    for (let i = 0; i < ttsFreqData.length; i++) {
+      sum += ttsFreqData[i];
+    }
+    const lvl = sum / ttsFreqData.length / 255;
+    useStore.getState().setSpeakerAudioLevel(lvl);
+    ttsAnalyserRaf = requestAnimationFrame(tick);
+  };
+  ttsAnalyserRaf = requestAnimationFrame(tick);
+}
+
+function stopTtsAmplitudeTracking(): void {
+  if (ttsAnalyserRaf) {
+    cancelAnimationFrame(ttsAnalyserRaf);
+    ttsAnalyserRaf = 0;
+  }
+  useStore.getState().setSpeakerAudioLevel(0);
+}
+
+if (typeof window !== "undefined") {
+  const resumeOnInteraction = () => {
+    if (ttsAudioContext && ttsAudioContext.state === "suspended") {
+      ttsAudioContext.resume().catch(() => {});
+    }
+  };
+  window.addEventListener("click", resumeOnInteraction, { passive: true });
+  window.addEventListener("keydown", resumeOnInteraction, { passive: true });
+}
+
 if (playerAudio) {
   playerAudio.preload = "auto";
+  playerAudio.volume = 1.0;
   // Single global listeners — re-attaching per clip caused leak + race.
-  playerAudio.addEventListener("ended", () => handleClipFinished("ended"));
-  playerAudio.addEventListener("error", () => handleClipFinished("error"));
+  playerAudio.addEventListener("ended", () => {
+    stopTtsAmplitudeTracking();
+    console.log("[TTS:player] audio ended");
+    handleClipFinished("ended");
+  });
+  playerAudio.addEventListener("error", (e) => {
+    stopTtsAmplitudeTracking();
+    console.error("[TTS:player] audio error:", e);
+    handleClipFinished("error");
+  });
+  playerAudio.addEventListener("pause", () => {
+    stopTtsAmplitudeTracking();
+  });
+  playerAudio.addEventListener("play", () => {
+    ensureTtsAudioAnalysis();
+    if (ttsAudioContext && ttsAudioContext.state === "suspended") {
+      ttsAudioContext.resume().catch(() => {});
+    }
+    startTtsAmplitudeTracking();
+    console.log("[TTS:player] audio started playing");
+  });
+}
+
+// Wake up audio sinks (PipeWire suspend fix)
+async function wakeupAudioSinks(): Promise<void> {
+  if (audioWakeupPlayed) return;
+  try {
+    console.log("[TTS:wakeup] waking up audio sinks...");
+    const resp = await fetch(`${API_BASE}/audio/wakeup`);
+    if (resp.ok) {
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const wakeupAudio = new Audio(url);
+      wakeupAudio.volume = 0.001; // Almost silent
+      await wakeupAudio.play();
+      await new Promise(r => setTimeout(r, 100)); // Wait a bit
+      wakeupAudio.pause();
+      URL.revokeObjectURL(url);
+      audioWakeupPlayed = true;
+      console.log("[TTS:wakeup] audio sinks awakened");
+    }
+  } catch (e) {
+    console.warn("[TTS:wakeup] failed:", e);
+  }
 }
 const streamState = { id: "", spokenChars: 0 };
 let pendingFetches = 0;
@@ -122,7 +236,7 @@ export function currentVoiceProfile(): VoiceProfile | null {
 
 async function refreshServerVoiceProfile(): Promise<void> {
   try {
-    const resp = await fetch("/api/tts/status");
+    const resp = await fetch(`${API_BASE}/api/tts/status`);
     if (!resp.ok) return;
     const status = await resp.json();
     if (status?.available) {
@@ -159,7 +273,7 @@ function stopServerAudio() {
 async function speakWithServerTts(clean: string): Promise<boolean> {
   try {
     console.log("[TTS] requesting server TTS…");
-    const resp = await fetch("/api/tts", {
+    const resp = await fetch(`${API_BASE}/api/tts`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text: clean }),
@@ -177,13 +291,17 @@ async function speakWithServerTts(clean: string): Promise<boolean> {
     SYNTH?.cancel();
     activeAudioUrl = URL.createObjectURL(blob);
     activeAudio = new Audio(activeAudioUrl);
+    activeAudio.autoplay = true;
+    activeAudio.preload = "auto";
     activeAudio.onplay = () => {
-      console.log("[TTS] playing audio");
+      console.log("[TTS] ✓ PLAYING audio! volume:", activeAudio?.volume, "currentTime:", activeAudio?.currentTime);
+      const isArabic = /[\u0600-\u06FF]/.test(clean);
       useStore.getState().setVoiceProfile({
-        name: "Microsoft Ryan Neural",
-        lang: "en-GB",
+        name: isArabic ? "Hamed Neural (Arabic)" : "Thomas Neural (British)",
+        lang: isArabic ? "ar-SA" : "en-GB",
         tier: "cinematic",
       });
+
       useStore.getState().setOrb("speaking");
       mic.onTtsStart();
     };
@@ -194,12 +312,20 @@ async function speakWithServerTts(clean: string): Promise<boolean> {
       mic.onTtsEnd();
     };
     activeAudio.onerror = (e) => {
-      console.error("[TTS] audio play error:", e);
+      console.error("[TTS] ✗ audio play error:", e, "error:", activeAudio?.error);
       stopServerAudio();
       if (useStore.getState().orbState === "speaking") useStore.getState().setOrb("idle");
       mic.onTtsEnd();
     };
-    await activeAudio.play();
+    try {
+      await activeAudio.play();
+      console.log("[TTS] play() succeeded");
+    } catch (playError) {
+      console.error("[TTS] play() failed, trying workaround:", playError);
+      // Tauri/WebKit sometimes blocks autoplay - try setting volume first
+      activeAudio.volume = 1.0;
+      await activeAudio.play();
+    }
     return true;
   } catch (e) {
     console.error("[TTS] server TTS failed:", e);
@@ -209,19 +335,34 @@ async function speakWithServerTts(clean: string): Promise<boolean> {
 }
 
 export function speak(text: string): void {
-  if (!useStore.getState().voiceEnabled) {
+  const state = useStore.getState();
+  console.log("[TTS] speak() called, voiceEnabled:", state.voiceEnabled, "text:", text.slice(0, 50));
+  if (!state.voiceEnabled) {
     console.log("[TTS] voice disabled, skipping");
     return;
   }
+  
+  // Wake up audio sinks (PipeWire suspend fix)
+  void wakeupAudioSinks();
+  
   const clean = cleanSpeechText(text);
-  if (!clean) return;
+  if (!clean) {
+    console.log("[TTS] clean text is empty, skipping");
+    return;
+  }
   console.log("[TTS] speaking:", clean.slice(0, 80));
   // Hard-stop the streaming queue first so legacy speak() never overlaps
   // an in-progress streamSpeak burst.
   cancelStreamingTts();
   void (async () => {
-    if (await speakWithServerTts(clean)) return;
-    console.log("[TTS] server TTS failed, trying browser TTS");
+    console.log("[TTS] >>> trying server TTS...");
+    const result = await speakWithServerTts(clean);
+    console.log("[TTS] >>> server TTS result:", result);
+    if (result) {
+      console.log("[TTS] >>> server TTS succeeded");
+      return;
+    }
+    console.log("[TTS] >>> server TTS failed, trying browser TTS");
     speakWithBrowserTts(clean);
   })();
 }
@@ -236,6 +377,9 @@ export function streamSpeak(id: string, fullText: string, isFinal: boolean): voi
     console.log("[TTS:stream] voice disabled, skip");
     return;
   }
+
+  // Wake up audio sinks on first speak (PipeWire suspend fix)
+  void wakeupAudioSinks();
 
   // New message → reset queue + state so we don't blend two answers.
   if (id !== streamState.id) {
@@ -255,12 +399,12 @@ export function streamSpeak(id: string, fullText: string, isFinal: boolean): voi
   // Match runs of text terminated by sentence punctuation. Anything before
   // the last terminator is "complete" and safe to synthesize; the tail
   // (no terminator yet) waits for more tokens.
-  const re = /[^.!?\n]+[.!?\n]+/g;
+  const re = /[^.!?؟\n]+[.!?؟\n]+/g;
   let m: RegExpExecArray | null;
   let consumed = 0;
   while ((m = re.exec(unseen)) !== null) {
     const seg = m[0].trim();
-    if (seg.length >= 3 && /[a-z0-9]/i.test(seg)) {
+    if (seg.length >= 3 && /[a-z0-9\u0600-\u06FF]/i.test(seg)) {
       console.log("[TTS:stream] SENTENCE detected (%d chars): \"%s\"", seg.length, seg.slice(0, 60));
       void fetchAndEnqueue(seg);
     }
@@ -270,13 +414,14 @@ export function streamSpeak(id: string, fullText: string, isFinal: boolean): voi
 
   if (isFinal) {
     const tail = clean.slice(streamState.spokenChars).trim();
-    if (tail.length >= 2 && /[a-z0-9]/i.test(tail)) {
+    if (tail.length >= 2 && /[a-z0-9\u0600-\u06FF]/i.test(tail)) {
       console.log("[TTS:stream] FINAL flush tail (%d chars): \"%s\"", tail.length, tail.slice(0, 60));
       void fetchAndEnqueue(tail);
       streamState.spokenChars = clean.length;
     }
     maybeMarkStreamDone();
   }
+
 }
 
 function maybeMarkStreamDone(): void {
@@ -289,10 +434,10 @@ async function fetchAndEnqueue(text: string): Promise<void> {
   pendingFetches++;
   console.log("[TTS:fetch] START gen=%d, pendingFetches=%d, text=\"%s\"", gen, pendingFetches, text.slice(0, 50));
   try {
-    const resp = await fetch("/api/tts", {
+    const resp = await fetch(`${API_BASE}/api/tts`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, play_directly: true }),
     });
     if (gen !== streamGeneration) {
       console.log("[TTS:fetch] STALE (gen %d vs %d) — dropping", gen, streamGeneration);
@@ -414,6 +559,7 @@ function playNext(): void {
 }
 
 export function cancelStreamingTts(): void {
+  stopTtsAmplitudeTracking();
   // Pause the shared player FIRST — guarantees no two clips ever overlap
   // because the OS only ever plays ONE element at a time.
   if (playerAudio) {
@@ -484,8 +630,8 @@ export function stopSpeaking() {
 // as silence; the actual detection threshold floats up dynamically based on
 // a noise baseline learned during the first second of every mic session.
 const SILENCE_THRESHOLD   = 0.05;
-const SILENCE_TIMEOUT_MS  = 900;       // silence this long = end of utterance
-const MIN_RECORDING_MS    = 350;       // ignore clips shorter than this
+const SILENCE_TIMEOUT_MS  = 1100;      // silence this long = end of utterance
+const MIN_RECORDING_MS    = 600;       // ignore clips shorter than this
 const MAX_RECORDING_MS    = 8_000;     // force-flush clips longer than this
 const BASELINE_WINDOW_MS  = 1_000;     // learn ambient noise level over 1 s
 const BASELINE_MULTIPLIER = 1.8;       // require lvl > baseline * mult to count as voice
@@ -571,6 +717,19 @@ export class JarvisMic {
     // Tear down any cancel-probe still in flight; its audio must never submit.
     if (this._probeTimer) { clearTimeout(this._probeTimer); this._probeTimer = null; }
     if (this.isRecording) this._stopRecording();
+
+    const isLive = useStore.getState().liveVoice;
+    if (isLive) {
+      // In Live Mode (Gemini Live style): keep listening continuously
+      this._awakeUntil = Infinity;
+      if (this._wantListening) {
+        useStore.getState().setMicMode("live");
+        useStore.getState().setOrb("listening");
+        useStore.getState().setMicStatus("محادثة حية نشطة · أنا أستمع إليك…");
+      }
+      return;
+    }
+
     // After JARVIS finishes, arm a generous follow-up window so the user
     // can reply naturally — no second wake word needed.
     this._awakeUntil = Date.now() + FOLLOWUP_REPLY_MS;
@@ -675,6 +834,7 @@ export class JarvisMic {
     this.baselineSamples = 0;
     this.baselineStartedAt = Date.now();
 
+    let lastLevelUpdate = 0;
     const freqData = new Uint8Array(this.analyser.frequencyBinCount);
     const tick = () => {
       if (!this.analyser || !this._wantListening) return;
@@ -682,7 +842,13 @@ export class JarvisMic {
       let sum = 0;
       for (let i = 0; i < freqData.length; i++) sum += freqData[i];
       const lvl = sum / freqData.length / 255;
-      useStore.getState().setAudioLevel(lvl);
+
+      // Throttle audio level state update to 10 FPS so React doesn't re-render 60 times/sec in WebKitGTK
+      const now = Date.now();
+      if (now - lastLevelUpdate > 100) {
+        lastLevelUpdate = now;
+        useStore.getState().setAudioLevel(lvl);
+      }
 
       // ── Baseline learning. Only samples taken before any voice has been
       //    detected count, so we learn the real ambient noise floor.
@@ -731,10 +897,7 @@ export class JarvisMic {
           this._stopRecording();
         }
       } else if (useStore.getState().bargeIn) {
-        // JARVIS is speaking; mic is muted to normal commands. Keep one ear
-        // open for a stop word: a sustained, clearly-louder-than-ambient voice
-        // (transient echo residue won't survive the sustain window) arms a
-        // short cancel-probe. TTS keeps playing unless the probe hears "cancel".
+        const isLive = useStore.getState().liveVoice;
         const loudThr = Math.max(BARGE_IN_FLOOR, this.baselineLvl * BARGE_IN_MULTIPLIER);
         if (lvl > loudThr) {
           if (!this._loudRunStart) {
@@ -743,7 +906,15 @@ export class JarvisMic {
             Date.now() - this._loudRunStart > BARGE_IN_SUSTAIN_MS &&
             !this.isRecording && !this._transcribing
           ) {
-            this._startCancelProbe();
+            if (isLive) {
+              console.log("[LIVE] user spoke while JARVIS speaking — immediate barge-in cut");
+              cancelStreamingTts();
+              this._ttsActive = false;
+              this._loudRunStart = 0;
+              this._startRecording();
+            } else {
+              this._startCancelProbe();
+            }
           }
         } else {
           this._loudRunStart = 0;
@@ -789,7 +960,7 @@ export class JarvisMic {
       this.chunks = [];
     };
 
-    this.recorder.start(100);
+    this.recorder.start(500);
     this.isRecording = true;
     this.recordingStartTime = Date.now();
     this.silenceStart = 0;
@@ -818,7 +989,7 @@ export class JarvisMic {
       const form = new FormData();
       form.append("audio", blob, "speech.webm");
 
-      const resp = await fetch("/api/stt", { method: "POST", body: form });
+      const resp = await fetch(`${API_BASE}/api/stt`, { method: "POST", body: form });
       const result = await resp.json();
 
       console.log("[STT] result:", result);
@@ -856,18 +1027,35 @@ export class JarvisMic {
           return;
         }
 
-        // Sleep command always wins — drop to dormant immediately.
-        if (SLEEP_PHRASES.test(text)) {
-          this._awakeUntil = 0;
-          useStore.getState().setMicMode("dormant");
-          useStore.getState().setMicStatus(`dormant — say “${configuredWakeWord()}” to wake`);
+        // 1. Live Mode Start: "jarvis start" / "جارفيس ابدأ"
+        if (isLiveStartCommand(text)) {
+          console.log("[LIVE] Live start command recognized:", text);
+          useStore.getState().setLiveVoice(true);
+          useStore.getState().setMicMode("live");
+          useStore.getState().setOrb("listening");
+          this._awakeUntil = Infinity;
+          const isAr = /[\u0600-\u06FF]/.test(text);
+          speak(isAr ? "أهلاً بك يا سيدي، وضع المحادثة الحية مفعّل. تفضل، أنا أستمع إليك." : "Live voice conversation active. I'm listening, sir.");
           return;
         }
 
+        // 2. Live Mode Stop: "jarvis stop" / "جارفيس توقف" / "توقف" / "مع السلامة"
+        if (isLiveStopCommand(text) || SLEEP_PHRASES.test(text)) {
+          console.log("[LIVE] Live stop command recognized:", text);
+          useStore.getState().setLiveVoice(false);
+          this._awakeUntil = 0;
+          useStore.getState().setMicMode("dormant");
+          useStore.getState().setOrb("idle");
+          const isAr = /[\u0600-\u06FF]/.test(text);
+          speak(isAr ? "حاضر يا سيدي، تم إنهاء وضع المحادثة الحية." : "Live conversation ended, sir.");
+          return;
+        }
+
+        const isLive = useStore.getState().liveVoice;
         const now = Date.now();
         const wakeWord = configuredWakeWord();
         const hasWake = detectWake(text, wakeWord);
-        const inFollowup = now < this._awakeUntil;
+        const inFollowup = isLive || (now < this._awakeUntil);
 
         if (!hasWake && !inFollowup) {
           // Ambient speech — drop. Brief visual feedback then back to dormant.
@@ -875,14 +1063,14 @@ export class JarvisMic {
           useStore.getState().setMicStatus(`(ignored) "${text.slice(0, 40)}"`);
           setTimeout(() => {
             if (this._wantListening && useStore.getState().micMode === "dormant") {
-              useStore.getState().setMicStatus(`listening · say “${configuredWakeWord()}”`);
+              useStore.getState().setMicStatus(`قل “jarvis start” لبدء المحادثة الحية`);
             }
           }, 1200);
           return;
         }
 
-        // Strip wake word so model sees just the command body.
-        const cleaned = stripWakeWord(text, wakeWord);
+        // In Live Mode: the whole text is the message! Otherwise strip wake word.
+        const cleaned = isLive ? text.trim() : stripWakeWord(text, wakeWord);
         if (!cleaned) {
           // Bare wake word — arm short window, no submission.
           this._awakeUntil = now + FOLLOWUP_WAKE_MS;
@@ -892,10 +1080,15 @@ export class JarvisMic {
           return;
         }
 
-        // Real submission. Extend window so the user can continue
-        // refining the request without re-saying the wake word.
-        this._awakeUntil = now + FOLLOWUP_WAKE_MS;
-        useStore.getState().setMicMode("armed");
+        // Real submission.
+        if (isLive) {
+          this._awakeUntil = Infinity;
+          useStore.getState().setMicMode("live");
+          useStore.getState().setMicStatus("محادثة حية · جارٍ الرد…");
+        } else {
+          this._awakeUntil = now + FOLLOWUP_WAKE_MS;
+          useStore.getState().setMicMode("armed");
+        }
         this._onWake?.(text);
         this._queueSubmit(cleaned);
       }

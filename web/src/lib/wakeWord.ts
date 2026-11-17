@@ -69,7 +69,26 @@ function isJarvisLike(token: string): boolean {
   return levenshtein(t, "jarvis") <= 2;
 }
 
+// Arabic and English wake words & live conversation triggers
+const WAKE_ARABIC_RE = /(?:^|\s)(?:يا\s*)?(?:جارف[يإ]س|جارفس|جارفز|جارفيس)(?:$|\s|[.,!؟])/iu;
+
+// "jarvis start" / "جارفيس ابدأ" — launches live continuous voice conversation
+export const LIVE_START_RE = /(?:\b(?:hey|ok)?\s*jarvis\s+start\b|\bstart\s+live\b|(?:^|\s)(?:يا\s*)?(?:جارف[يإ]س|جارفس)\s*(?:ابدأ|ابدا|تشغيل|يلا|تكلم)(?:$|\s|[.,!؟])|(?:^|\s)(?:ابدأ|ابدا)\s*(?:المحادثة|الكلام)(?:$|\s|[.,!؟]))/iu;
+
+// "jarvis stop" / "جارفيس توقف" — exits live conversation
+export const LIVE_STOP_RE = /(?:\b(?:hey|ok)?\s*jarvis\s+stop\b|\b(?:stop|exit|cancel)\s+live\b|\bstop\s+listening\b|(?:^|\s)(?:يا\s*)?(?:جارف[يإ]س|جارفس)?\s*(?:توقف|مع السلامة|إنهاء|انهاء|اسكت|خلاص|كافي|بس|اصمت|وقف)(?:$|\s|[.,!؟]))/iu;
+
+export function isLiveStartCommand(text: string): boolean {
+  return LIVE_START_RE.test(text.trim());
+}
+
+export function isLiveStopCommand(text: string): boolean {
+  return LIVE_STOP_RE.test(text.trim());
+}
+
 export function detectWake(text: string, wakeWord = DEFAULT_WAKE_WORD): boolean {
+  if (isLiveStartCommand(text)) return true;
+  if (WAKE_ARABIC_RE.test(text)) return true;
   if (!isDefaultWakeWord(wakeWord)) return customWakePattern(wakeWord).test(text);
   if (WAKE_STRICT_RE.test(text) || WAKE_SHAPE_RE.test(text)) return true;
   // Token-level Levenshtein fallback — catches odd Whisper outputs like
@@ -81,11 +100,15 @@ export function detectWake(text: string, wakeWord = DEFAULT_WAKE_WORD): boolean 
 }
 
 export function stripWakeWord(text: string, wakeWord = DEFAULT_WAKE_WORD): string {
+  // Strip Arabic wake word
+  let out = text.replace(/^\s*(?:يا\s*)?(?:جارف[يإ]س|جارفس|جارفز)[\s,.\-:!?؟]*/iu, "").trim();
+  if (out !== text) return out;
+
   if (!isDefaultWakeWord(wakeWord)) {
     return text.replace(customWakePattern(wakeWord, true), "").trim();
   }
   // Strip strict match first
-  let out = text.replace(/^\s*(?:hey|ok|okay|yo|hi|ay)?\s*j\.?a\.?r\.?v\.?i\.?s\.?[\s,.\-:!?]*/i, "");
+  out = text.replace(/^\s*(?:hey|ok|okay|yo|hi|ay)?\s*j\.?a\.?r\.?v\.?i\.?s\.?[\s,.\-:!?]*/i, "");
   if (out !== text) return out.trim();
   // Strip fuzzy first-token if Jarvis-like
   const m = out.match(/^\s*(\S+)[\s,.\-:!?]*/);

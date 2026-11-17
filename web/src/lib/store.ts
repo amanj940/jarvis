@@ -159,6 +159,44 @@ export interface MediaCard {
   galaxy?: { nodes: GalaxyNode[]; clusters: GalaxyCluster[] };
 }
 
+export interface HoloSceneState {
+  active: boolean;
+  mode: "anatomy3d" | "blueprint" | "edu";
+  modelId: string; // "cpu" | "neural" | "reactor"
+  explodeLevel: number; // 0 to 100
+  targetExplodeLevel: number;
+  selectedLayerId: string | null;
+  isolated: boolean;
+  wireframe: boolean;
+  autoRotate: boolean;
+  rotation: { x: number; y: number };
+  eduLessonId: string;
+  eduStepIdx: number;
+  eduIsPlaying: boolean;
+  activeNodeId: string | null;
+  holographicReason: string | null;
+}
+
+export type SkinName = "reactor" | "neural" | "plasma" | "wave" | "holo";
+
+export interface Skin {
+  name: string;
+  ar: string;
+  accent: string;
+  accent2: string;
+  core: string;
+  radius: string;
+  brk: number;
+}
+
+export const SKINS: Record<SkinName, Skin> = {
+  reactor: { name: "Reactor", ar: "المفاعل", accent: "#22D3EE", accent2: "#FBBF24", core: "rings", radius: "6px", brk: 1 },
+  neural:  { name: "Neural",  ar: "عصبي",   accent: "#A78BFA", accent2: "#F0ABFC", core: "galaxy", radius: "18px", brk: 0 },
+  plasma:  { name: "Plasma",  ar: "بلازما", accent: "#FB923C", accent2: "#F472B6", core: "blob", radius: "26px", brk: 0 },
+  wave:    { name: "Wave",    ar: "موجة",   accent: "#34D399", accent2: "#67E8F9", core: "ribbon", radius: "10px", brk: 0 },
+  holo:    { name: "Holo",    ar: "هولو",   accent: "#BAE6FD", accent2: "#60A5FA", core: "globe", radius: "0px", brk: 1 },
+};
+
 interface StoreState {
   // connection
   connected: boolean;
@@ -169,8 +207,13 @@ interface StoreState {
   // orb
   orbState: OrbState;
   setOrb: (s: OrbState) => void;
-  audioLevel: number;
+  audioLevel: number; // Microphone input amplitude (0..1)
   setAudioLevel: (v: number) => void;
+  speakerAudioLevel: number; // Assistant output playback amplitude (0..1)
+  setSpeakerAudioLevel: (v: number) => void;
+  // skin
+  skin: SkinName;
+  setSkin: (s: SkinName) => void;
   // chat
   chat: ChatEntry[];
   pushChat: (e: ChatEntry) => void;
@@ -213,8 +256,11 @@ interface StoreState {
   // "dormant" : require wake word
   // "armed"   : follow-up window — anything you say submits
   // "speaking": JARVIS is talking, mic paused
-  micMode: "dormant" | "armed" | "speaking";
+  // "live"    : continuous live voice assistant (Gemini Live style)
+  micMode: "dormant" | "armed" | "speaking" | "live";
   setMicMode: (v: StoreState["micMode"]) => void;
+  liveVoice: boolean;
+  setLiveVoice: (v: boolean) => void;
   wakeEnabled: boolean;
   setWakeEnabled: (v: boolean) => void;
   // Media Bay
@@ -252,9 +298,8 @@ interface StoreState {
   clearSuggestions: () => void;
   terminalOpen: boolean;
   setTerminalOpen: (v: boolean) => void;
-  // Shell mode: "full" full HUD, "widget" compact side-panel for at-a-glance
-  // results when the main window is collapsed to the system tray.
-  shellMode: "full" | "widget";
+  // Shell mode: "living" minimal AI entity, "full" full HUD, "widget" compact side-panel, "holo" holographic studio
+  shellMode: "living" | "full" | "widget" | "holo";
   setShellMode: (m: StoreState["shellMode"]) => void;
   // Previous session: on a cold launch (reboot / app relaunch) the prior
   // chat/media/tools/swarms are stashed instead of auto-reopening. Restore is
@@ -262,6 +307,40 @@ interface StoreState {
   prevSessionAvailable: boolean;
   restoreLastSession: () => void;
   dismissLastSession: () => void;
+  // Settings modal navigation
+  settingsOpen: boolean;
+  settingsTab: string;
+  openSettings: (tab?: string) => void;
+  closeSettings: () => void;
+  // Projects workspace modal
+  projectsOpen: boolean;
+  openProjects: () => void;
+  closeProjects: () => void;
+  // Autonomous Holographic Stage
+  holoState: HoloSceneState;
+  openHolo: (opts?: Partial<HoloSceneState>) => void;
+  dismissHolo: (reason?: string) => void;
+  setHoloExplode: (level: number) => void;
+  setHoloTargetExplode: (level: number) => void;
+  isolateHoloLayer: (layerId: string | null) => void;
+  setHoloRotation: (r: { x: number; y: number }) => void;
+  setHoloAutoRotate: (v: boolean) => void;
+  setHoloWireframe: (v: boolean) => void;
+  setHoloEduStep: (step: number) => void;
+  setHoloEduPlaying: (v: boolean) => void;
+  setHoloModel: (modelId: string) => void;
+  setHoloMode: (mode: "anatomy3d" | "blueprint" | "edu") => void;
+  setHoloBlueprintNode: (nodeId: string | null) => void;
+  // Holo-Engineering Monitor (backward-compatible aliases)
+  monitorOpen: boolean;
+  monitorMode: "anatomy3d" | "blueprint" | "edu";
+  selectedAnatomyModel: string;
+  selectedEduLesson: string;
+  openMonitor: (mode?: "anatomy3d" | "blueprint" | "edu", modelOrLesson?: string) => void;
+  closeMonitor: () => void;
+  setMonitorMode: (mode: "anatomy3d" | "blueprint" | "edu") => void;
+  setSelectedAnatomyModel: (model: string) => void;
+  setSelectedEduLesson: (lesson: string) => void;
 }
 
 let _id = 0;
@@ -274,12 +353,24 @@ function isBootGreeting(entry: ChatEntry) {
   return entry.role === "assistant" && BOOT_GREETING_RE.test(entry.text.trim());
 }
 
-function dedupeBootGreetings(chat: ChatEntry[]) {
-  let seen = false;
-  return chat.filter((entry) => {
-    if (!isBootGreeting(entry)) return true;
-    if (seen) return false;
-    seen = true;
+function cleanupChatHistory(chat: ChatEntry[]) {
+  let seenBoot = false;
+  let lastOnlineIdx = -1;
+  for (let i = chat.length - 1; i >= 0; i--) {
+    if (chat[i].role === "info" && chat[i].text.includes("online —")) {
+      lastOnlineIdx = i;
+      break;
+    }
+  }
+  return chat.filter((entry, idx) => {
+    if (isBootGreeting(entry)) {
+      if (seenBoot) return false;
+      seenBoot = true;
+      return true;
+    }
+    if (entry.role === "info" && entry.text.includes("online —")) {
+      return idx === lastOnlineIdx;
+    }
     return true;
   });
 }
@@ -300,10 +391,24 @@ export const useStore = create<StoreState>()(persist((set) => ({
   setOrb: (s) => set({ orbState: s }),
   audioLevel: 0,
   setAudioLevel: (v) => set({ audioLevel: v }),
+  speakerAudioLevel: 0,
+  setSpeakerAudioLevel: (v) => set({ speakerAudioLevel: v }),
+  skin: "reactor",
+  setSkin: (s) => set({ skin: s }),
   chat: [],
   pushChat: (e) =>
     set((st) => {
       if (isBootGreeting(e) && st.chat.some(isBootGreeting)) return {};
+      // Deduplicate "online —" status banners: replace previous online banner with latest
+      if (e.role === "info" && e.text.includes("online —")) {
+        const filtered = st.chat.filter((c) => !(c.role === "info" && c.text.includes("online —")));
+        return { chat: [...filtered, e].slice(-400) };
+      }
+      // Deduplicate consecutive identical info or error messages
+      const last = st.chat[st.chat.length - 1];
+      if (last && last.role === e.role && last.text === e.text && (e.role === "info" || e.role === "error")) {
+        return {};
+      }
       return { chat: [...st.chat, e].slice(-400) };
     }),
   clearChat: () => set({ chat: [] }),
@@ -350,6 +455,8 @@ export const useStore = create<StoreState>()(persist((set) => ({
   setMicStatus: (v) => set({ micStatus: v }),
   micMode: "dormant",
   setMicMode: (v) => set({ micMode: v }),
+  liveVoice: false,
+  setLiveVoice: (v) => set({ liveVoice: v }),
   wakeEnabled: false,
   setWakeEnabled: (v) => set({ wakeEnabled: v }),
   media: [],
@@ -402,16 +509,10 @@ export const useStore = create<StoreState>()(persist((set) => ({
   expandMedia: (id, idx) =>
     set((st) => ({ media: st.media.map((m) => (m.id === id ? { ...m, expanded: idx } : m)) })),
   clearMedia: () => set({ media: [] }),
-  shellMode: ((): "full" | "widget" => {
-    try {
-      const v = localStorage.getItem("jarvis.shellMode");
-      if (v === "widget" || v === "full") return v;
-    } catch { /* noop */ }
-    return "full";
-  })(),
-  setShellMode: (m) => {
-    try { localStorage.setItem("jarvis.shellMode", m); } catch { /* noop */ }
-    set({ shellMode: m });
+  shellMode: "living",
+  setShellMode: () => {
+    try { localStorage.setItem("jarvis.shellMode", "living"); } catch { /* noop */ }
+    set({ shellMode: "living" });
   },
   lightbox: null,
   setLightbox: (v) => set({ lightbox: v }),
@@ -463,7 +564,7 @@ export const useStore = create<StoreState>()(persist((set) => ({
       if (!raw) { set({ prevSessionAvailable: false }); return; }
       const prev = JSON.parse(raw);
       set({
-        chat:   dedupeBootGreetings((prev.chat || []).map((c: ChatEntry) => ({ ...c, streaming: false }))),
+        chat:   cleanupChatHistory((prev.chat || []).map((c: ChatEntry) => ({ ...c, streaming: false }))),
         media:  prev.media  || [],
         tools:  prev.tools  || [],
         swarms: (prev.swarms || []).map((s: SwarmRun) => ({ ...s, active: false })),
@@ -476,6 +577,124 @@ export const useStore = create<StoreState>()(persist((set) => ({
     try { localStorage.removeItem(PREV_SESSION_KEY); } catch { /* noop */ }
     set({ prevSessionAvailable: false });
   },
+  settingsOpen: false,
+  settingsTab: "ai",
+  openSettings: (tab = "ai") => set({ settingsOpen: true, settingsTab: tab }),
+  closeSettings: () => set({ settingsOpen: false }),
+  projectsOpen: false,
+  openProjects: () => set({ projectsOpen: true }),
+  closeProjects: () => set({ projectsOpen: false }),
+  holoState: {
+    active: false,
+    mode: "anatomy3d",
+    modelId: "cpu",
+    explodeLevel: 45,
+    targetExplodeLevel: 45,
+    selectedLayerId: null,
+    isolated: false,
+    wireframe: false,
+    autoRotate: true,
+    rotation: { x: 22, y: -35 },
+    eduLessonId: "cpu_pipeline",
+    eduStepIdx: 0,
+    eduIsPlaying: false,
+    activeNodeId: "input",
+    holographicReason: null,
+  },
+  openHolo: (opts) => set((s) => {
+    const nextMode = opts?.mode || s.holoState.mode;
+    const nextModel = opts?.modelId || s.holoState.modelId;
+    const nextLesson = opts?.eduLessonId || s.holoState.eduLessonId;
+    const nextExplode = opts?.explodeLevel ?? s.holoState.explodeLevel;
+    return {
+      holoState: {
+        ...s.holoState,
+        ...opts,
+        active: true,
+        mode: nextMode,
+        modelId: nextModel,
+        eduLessonId: nextLesson,
+        explodeLevel: nextExplode,
+        targetExplodeLevel: nextExplode,
+      },
+      monitorOpen: false,
+      monitorMode: nextMode,
+      selectedAnatomyModel: nextModel,
+      selectedEduLesson: nextLesson,
+    };
+  }),
+  dismissHolo: (reason) => set((s) => ({
+    holoState: { ...s.holoState, active: false, holographicReason: reason || null, isolated: false },
+    monitorOpen: false,
+  })),
+  setHoloExplode: (level) => set((s) => ({
+    holoState: { ...s.holoState, explodeLevel: Math.max(0, Math.min(100, level)), targetExplodeLevel: Math.max(0, Math.min(100, level)) },
+  })),
+  setHoloTargetExplode: (level) => set((s) => ({
+    holoState: { ...s.holoState, targetExplodeLevel: Math.max(0, Math.min(100, level)) },
+  })),
+  isolateHoloLayer: (layerId) => set((s) => ({
+    holoState: { ...s.holoState, selectedLayerId: layerId, isolated: !!layerId },
+  })),
+  setHoloRotation: (r) => set((s) => ({
+    holoState: { ...s.holoState, rotation: r },
+  })),
+  setHoloAutoRotate: (v) => set((s) => ({
+    holoState: { ...s.holoState, autoRotate: v },
+  })),
+  setHoloWireframe: (v) => set((s) => ({
+    holoState: { ...s.holoState, wireframe: v },
+  })),
+  setHoloEduStep: (idx) => set((s) => ({
+    holoState: { ...s.holoState, eduStepIdx: idx },
+  })),
+  setHoloEduPlaying: (v) => set((s) => ({
+    holoState: { ...s.holoState, eduIsPlaying: v },
+  })),
+  setHoloModel: (modelId) => set((s) => ({
+    holoState: { ...s.holoState, modelId, selectedLayerId: null, isolated: false },
+    selectedAnatomyModel: modelId,
+  })),
+  setHoloMode: (mode) => set((s) => ({
+    holoState: { ...s.holoState, mode },
+    monitorMode: mode,
+  })),
+  setHoloBlueprintNode: (nodeId) => set((s) => ({
+    holoState: { ...s.holoState, activeNodeId: nodeId },
+  })),
+  monitorOpen: false,
+  monitorMode: "anatomy3d",
+  selectedAnatomyModel: "cpu",
+  selectedEduLesson: "cpu_pipeline",
+  openMonitor: (mode = "anatomy3d", modelOrLesson?: string) => set((s) => ({
+    monitorOpen: true,
+    monitorMode: mode,
+    selectedAnatomyModel: mode === "anatomy3d" && modelOrLesson ? modelOrLesson : s.selectedAnatomyModel,
+    selectedEduLesson: mode === "edu" && modelOrLesson ? modelOrLesson : s.selectedEduLesson,
+    holoState: {
+      ...s.holoState,
+      active: true,
+      mode,
+      modelId: mode === "anatomy3d" && modelOrLesson ? modelOrLesson : s.holoState.modelId,
+      eduLessonId: mode === "edu" && modelOrLesson ? modelOrLesson : s.holoState.eduLessonId,
+    },
+  })),
+  closeMonitor: () => set((s) => ({
+    monitorOpen: false,
+    holoState: { ...s.holoState, active: false, isolated: false },
+  })),
+  setMonitorMode: (mode) => set((s) => ({
+    monitorMode: mode,
+    holoState: { ...s.holoState, mode },
+  })),
+  setSelectedAnatomyModel: (m) => set((s) => ({
+    selectedAnatomyModel: m,
+    holoState: { ...s.holoState, modelId: m },
+  })),
+  setSelectedEduLesson: (l) => set((s) => ({
+    selectedEduLesson: l,
+    holoState: { ...s.holoState, eduLessonId: l },
+  })),
 }), {
   // Persist only durable, user-meaningful slices. Ephemeral runtime state
   // (orb, audio levels, mic flags, transient overlays, attachments) lives
@@ -498,7 +717,7 @@ export const useStore = create<StoreState>()(persist((set) => ({
   onRehydrateStorage: () => (state) => {
     if (!state) return;
     if (state.chat?.length) {
-      state.chat = dedupeBootGreetings(state.chat.map((c) => ({ ...c, streaming: false })));
+      state.chat = cleanupChatHistory(state.chat.map((c) => ({ ...c, streaming: false })));
     }
     // Cold launch (reboot / app relaunch) vs in-app reload. No alive marker ⇒
     // fresh process ⇒ don't auto-reopen the prior session; stash it for an

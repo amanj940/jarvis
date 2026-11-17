@@ -26,6 +26,15 @@ export default function CommandBar() {
   const addAttachment = useStore((s) => s.addAttachment);
   const removeAttachment = useStore((s) => s.removeAttachment);
   const suggestions = useStore((s) => s.suggestions);
+  const openSettings = useStore((s) => s.openSettings);
+  const openProjects = useStore((s) => s.openProjects);
+
+  const quickActions = [
+    { label: "⚡ فحص النظام", cmd: "ما هي حالة موارد النظام واستهلاك الذاكرة والمعالج؟" },
+    { label: "📁 المشاريع الـ 27", isProjects: true },
+    { label: "🛠️ الأدوات والإضافات", cmd: "ما هي الأدوات والإضافات المفعلة الآن؟" },
+    { label: "🧹 مسح الشاشة", isClear: true },
+  ];
 
   const imageAttachments = pending.filter((a) => a.type === "image");
   const hasImages = imageAttachments.length > 0;
@@ -44,7 +53,7 @@ export default function CommandBar() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey && e.key === "/") || (e.key === "/" && document.activeElement?.tagName !== "TEXTAREA")) {
+      if ((e.ctrlKey && e.key === "/") || (e.key === "/" && document.activeElement?.tagName !== "TEXTAREA" && document.activeElement?.tagName !== "INPUT")) {
         e.preventDefault();
         textareaRef.current?.focus();
       }
@@ -62,6 +71,11 @@ export default function CommandBar() {
     const st = useStore.getState();
     const hasAtt = st.pendingAttachments.length > 0;
     if (!v && !hasAtt) return;
+    if (v.toLowerCase() === "/clear" || v.toLowerCase() === "/cls") {
+      st.clearChat();
+      setValue("");
+      return;
+    }
     if (!v.startsWith("/")) {
       pushChat({
         id: nextId(),
@@ -79,7 +93,7 @@ export default function CommandBar() {
     const t = text.trim();
     if (!t || !connected) return;
     pushChat({ id: nextId(), role: "user", text: t, ts: Date.now() });
-    wsClient.chat(t);  // also clears the suggestion chips
+    wsClient.chat(t);
     setValue("");
   };
 
@@ -102,12 +116,34 @@ export default function CommandBar() {
         },
         (phrase) => {
           console.log("wake phrase:", phrase);
-          // Bring the Electron window forward (or pop the widget) on wake.
           try { (window as any).jarvis?.send?.("jarvis:wake"); } catch { /* noop */ }
         }
       );
     }
   };
+
+  useEffect(() => {
+    if (wakeEnabled && !micEnabled && connected) {
+      mic.start(
+        (text, isFinal) => {
+          if (isFinal && text.trim()) {
+            const trimmed = text.trim();
+            pushChat({ id: nextId(), role: "user", text: trimmed, ts: Date.now() });
+            wsClient.chat(trimmed);
+            setValue("");
+          } else {
+            setValue(text);
+          }
+        },
+        (phrase) => {
+          console.log("wake phrase:", phrase);
+          try { (window as any).jarvis?.send?.("jarvis:wake"); } catch { /* noop */ }
+        }
+      );
+    } else if (!wakeEnabled && micEnabled) {
+      mic.stop();
+    }
+  }, [wakeEnabled, connected]);
 
   const onFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
@@ -116,113 +152,148 @@ export default function CommandBar() {
   };
 
   return (
-    <div className="holo-panel h-full flex flex-col overflow-hidden">
-      {/* ── Attached image previews ─────────────────────────────────── */}
+    <div className="holo-panel h-full flex flex-col overflow-hidden border border-cyan-500/25 bg-slate-950/90 shadow-2xl backdrop-blur-md rounded-xl">
+      {/* ── Attached previews ────────────────────────────────────────── */}
       {pending.length > 0 && (
-        <div className="flex flex-wrap gap-2 px-3 pt-2.5 pb-1 shrink-0">
+        <div className="flex flex-wrap gap-2 px-3 pt-2.5 pb-1 shrink-0 bg-slate-900/40 border-b border-cyan-500/15">
           {pending.map((a, i) => (
             <div
               key={i}
-              className="group relative flex items-center gap-2 pl-1 pr-2.5 py-1 rounded-xl border border-jarvis-aqua/35 bg-jarvis-aqua/8 hover:border-jarvis-aqua/60 hover:bg-jarvis-aqua/12 transition-all"
+              className="group relative flex items-center gap-2 pl-1 pr-2.5 py-1 rounded-xl border border-cyan-500/35 bg-cyan-950/30 hover:border-cyan-400 hover:bg-cyan-950/50 transition-all shadow-sm"
             >
               {a.type === "image" && (a.data_url || a.url) ? (
                 <img
                   src={a.data_url || a.url}
                   alt=""
-                  className="w-11 h-11 object-cover rounded-xl border border-jarvis-aqua/25 shrink-0"
+                  className="w-10 h-10 object-cover rounded-lg border border-cyan-500/30 shrink-0"
                 />
               ) : (
-                <div className="w-11 h-11 rounded-xl border border-jarvis-aqua/20 bg-jarvis-cyan/5 flex items-center justify-center text-[9px] text-mono text-jarvis-cyan/60 shrink-0">
+                <div className="w-10 h-10 rounded-lg border border-cyan-500/20 bg-cyan-950/20 flex items-center justify-center text-[9px] font-mono text-cyan-400 shrink-0">
                   FILE
                 </div>
               )}
-              <span className="text-[10px] text-mono text-jarvis-aqua/80 truncate max-w-[100px]">
+              <span className="text-[10px] font-mono text-cyan-200 truncate max-w-[110px]">
                 {a.name}
               </span>
               <button
                 onClick={() => removeAttachment(i)}
-                className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-jarvis-ink border border-jarvis-danger/50 text-jarvis-danger flex items-center justify-center text-[9px] opacity-0 group-hover:opacity-100 transition-opacity"
-                title="Remove"
-              >×</button>
+                className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-slate-900 border border-rose-500/60 text-rose-400 flex items-center justify-center text-[10px] hover:bg-rose-950 cursor-pointer"
+                title="حذف الملف"
+              >
+                ×
+              </button>
             </div>
           ))}
         </div>
       )}
 
-      {/* ── Image action buttons ─────────────────────────────────────── */}
+      {/* ── Image actions (if any image attached) ───────────────────── */}
       {hasImages && (
-        <div className="px-3 pb-1.5 shrink-0">
+        <div className="px-3 pb-1.5 pt-1.5 shrink-0 bg-slate-900/30 border-b border-cyan-500/15">
           <ImageActions images={imageAttachments} />
         </div>
       )}
 
-      {/* ── Proactive suggestion chips ──────────────────────────────── */}
+      {/* ── Quick Action Toolbar ────────────────────────────────────── */}
+      <div className="flex items-center justify-between gap-1.5 px-3 pt-2 pb-1 shrink-0 border-b border-cyan-500/10">
+        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
+          {quickActions.map((qa, i) => (
+            <button
+              key={i}
+              onClick={() => {
+                if (qa.isProjects) {
+                  openProjects();
+                } else if (qa.isClear) {
+                  useStore.getState().clearChat();
+                } else if (qa.cmd) {
+                  sendSuggestion(qa.cmd);
+                }
+              }}
+              disabled={!connected}
+              className="px-2.5 py-1 rounded-lg border border-cyan-500/20 bg-slate-900/60 hover:bg-cyan-950/40 hover:border-cyan-500/40 text-cyan-300 text-[11px] font-mono transition-all whitespace-nowrap shadow-sm cursor-pointer disabled:opacity-40"
+            >
+              {qa.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Dynamic Voice Waveform indicator when listening */}
+        {(micEnabled || micStatus) && (
+          <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-cyan-950/60 border border-cyan-500/40 text-cyan-300 text-[10px] font-mono shrink-0">
+            <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping" />
+            <div className="flex items-center gap-0.5 h-3">
+              <span className="w-0.5 h-2 bg-cyan-400 animate-pulse" />
+              <span className="w-0.5 h-3 bg-cyan-300 animate-pulse" />
+              <span className="w-0.5 h-1.5 bg-cyan-400 animate-pulse" />
+            </div>
+            <span className="text-[9.5px]">مستمع</span>
+          </div>
+        )}
+      </div>
+
+      {/* ── Suggestions if active ───────────────────────────────────── */}
       {suggestions.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 px-3 pt-2 pb-0.5 shrink-0">
+        <div className="flex flex-wrap gap-1.5 px-3 pt-1.5 pb-1 shrink-0 bg-cyan-950/20 border-b border-cyan-500/15">
           {suggestions.map((s, i) => (
             <button
               key={i}
               onClick={() => sendSuggestion(s)}
               disabled={!connected}
-              className="group flex items-center gap-1.5 pl-2 pr-2.5 py-1 rounded-full border border-jarvis-cyan/25 bg-jarvis-cyan/[0.06] hover:border-jarvis-cyan/60 hover:bg-jarvis-cyan/12 text-jarvis-ice/75 hover:text-jarvis-ice text-[11px] transition-all disabled:opacity-30"
-              title="Send this"
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-cyan-500/30 bg-cyan-950/40 hover:border-cyan-400 hover:bg-cyan-950/70 text-cyan-200 text-[11px] transition-all cursor-pointer"
             >
-              <span className="text-jarvis-cyan/60 group-hover:text-jarvis-cyan text-[10px]">↳</span>
+              <span className="text-cyan-400 text-[10px]">↳</span>
               {s}
             </button>
           ))}
         </div>
       )}
 
-      {/* ── Input row ───────────────────────────────────────────────── */}
-      <div className="flex items-end gap-2 px-2.5 py-2 shrink-0 mt-auto">
-        {/* Mic */}
+      {/* ── Main Input Row ──────────────────────────────────────────── */}
+      <div className="flex items-end gap-2 px-3 py-2 shrink-0 mt-auto">
+        {/* Mic Toggle Button */}
         <button
           onClick={toggleMic}
-          title={micEnabled ? `mic ${micMode}` : "Start listening"}
-          className={`w-9 h-9 flex items-center justify-center rounded-xl border transition-all shrink-0 ${
+          title={micEnabled ? `المايكروفون مفعل (${micMode}) - اضغط للتعطيل` : "تفعيل المايكروفون والتحدث"}
+          className={`w-9 h-9 flex items-center justify-center rounded-xl border transition-all shrink-0 cursor-pointer ${
             !micEnabled
-              ? "border-jarvis-cyan/15 text-jarvis-ice/60 hover:text-jarvis-ice hover:border-jarvis-cyan/45 hover:bg-jarvis-cyan/10"
-              : micMode === "armed"
-                ? "border-jarvis-aqua/70 text-jarvis-aqua bg-jarvis-aqua/15 animate-pulse_glow"
-                : micMode === "speaking"
-                  ? "border-jarvis-warn/70 text-jarvis-warn bg-jarvis-warn/10"
-                  : "border-jarvis-cyan/60 text-jarvis-cyan bg-jarvis-cyan/10"
+              ? "border-cyan-500/20 text-slate-400 hover:text-cyan-300 hover:border-cyan-500/40 hover:bg-cyan-950/30"
+              : micMode === "speaking"
+                ? "border-amber-400 text-amber-300 bg-amber-950/30 shadow-[0_0_10px_rgba(251,191,36,0.3)]"
+                : "border-cyan-400 text-cyan-300 bg-cyan-950/50 shadow-[0_0_12px_rgba(34,211,238,0.4)] animate-pulse"
           }`}
         >
           <MicIcon active={micEnabled} />
         </button>
 
-        {/* Speaker */}
+        {/* Speaker / Voice output Toggle */}
         <button
           onClick={() => setVoiceEnabled(!voiceEnabled)}
-          title={voiceEnabled ? `Mute JARVIS (${voiceProfile?.name ?? "…"})` : `Unmute JARVIS (${voiceProfile?.name ?? "…"})`}
-          className={`w-9 h-9 flex items-center justify-center rounded-xl border transition-all shrink-0 ${
+          title={voiceEnabled ? `كتم صوت جارفيس (${voiceProfile?.name ?? "..."})` : `تشغيل صوت جارفيس (${voiceProfile?.name ?? "..."})`}
+          className={`w-9 h-9 flex items-center justify-center rounded-xl border transition-all shrink-0 cursor-pointer ${
             voiceEnabled
-              ? "border-jarvis-cyan/45 text-jarvis-cyan bg-jarvis-cyan/10"
-              : "border-jarvis-cyan/15 text-jarvis-ice/40 hover:text-jarvis-ice/70 hover:border-jarvis-cyan/30"
+              ? "border-cyan-500/40 text-cyan-300 bg-cyan-950/30"
+              : "border-slate-700 text-slate-500 hover:text-slate-300 hover:border-slate-600"
           }`}
         >
           <SpeakerIcon muted={!voiceEnabled} />
         </button>
 
-        {/* Upload */}
+        {/* Attachment Upload Button */}
         <button
           onClick={() => fileInputRef.current?.click()}
-          title="Attach image (Ctrl+U)"
-          className={`w-9 h-9 flex items-center justify-center rounded-xl border transition-all shrink-0 ${
+          title="إرفاق صورة أو ملف (Ctrl+U)"
+          className={`w-9 h-9 flex items-center justify-center rounded-xl border transition-all shrink-0 cursor-pointer ${
             hasImages
-              ? "border-jarvis-aqua/60 text-jarvis-aqua bg-jarvis-aqua/10"
-              : "border-jarvis-cyan/15 text-jarvis-ice/60 hover:text-jarvis-ice hover:border-jarvis-cyan/45 hover:bg-jarvis-cyan/10"
+              ? "border-cyan-400 text-cyan-300 bg-cyan-950/40 shadow-[0_0_8px_rgba(34,211,238,0.3)]"
+              : "border-cyan-500/20 text-slate-400 hover:text-cyan-300 hover:border-cyan-500/40 hover:bg-cyan-950/30"
           }`}
         >
           <UploadIcon />
         </button>
         <input ref={fileInputRef} type="file" accept="image/*,*/*" multiple className="hidden" onChange={onFileSelect} />
 
-        {/* Textarea */}
+        {/* Textarea Input Field */}
         <div className="flex-1 relative">
-          <span className="absolute left-3 top-[9px] text-jarvis-cyan/50 text-mono select-none pointer-events-none">›</span>
           <textarea
             ref={textareaRef}
             rows={1}
@@ -234,28 +305,29 @@ export default function CommandBar() {
                 submit();
               }
             }}
-            placeholder={connected ? "Speak to JARVIS, sir." : "Reconnecting…"}
+            placeholder={connected ? "اكتب أمرك لـ JARVIS، أو اسأل عن أي ملف أو خدمة..." : "جارٍ الاتصال بالنظام..."}
             disabled={!connected}
-            className="w-full bg-jarvis-glass border border-jarvis-cyan/15 focus:border-jarvis-cyan/55 outline-none pl-8 pr-10 py-[7px] rounded-xl text-jarvis-ice text-mono text-[13px] placeholder:text-jarvis-ice/30 backdrop-blur-md transition-all resize-none overflow-hidden leading-[1.45]"
+            className="w-full bg-slate-900/80 border border-cyan-500/20 focus:border-cyan-400 outline-none px-3.5 py-[7px] rounded-xl text-slate-100 font-sans text-[13px] placeholder:text-slate-500 backdrop-blur-md transition-all resize-none overflow-hidden leading-[1.5]"
           />
-          <span className="absolute right-3 bottom-[9px] text-[10px] text-mono text-jarvis-ice/30 tabular-nums pointer-events-none">
-            {value.length > 0 ? `${value.length}` : "↵"}
+          <span className="absolute right-3 bottom-[8px] text-[10px] font-mono text-cyan-500/40 tabular-nums pointer-events-none">
+            {value.length > 0 ? `${value.length}` : "↵ Enter"}
           </span>
         </div>
 
-        {/* Send */}
+        {/* Send Button */}
         <button
           onClick={submit}
           disabled={(!value.trim() && pending.length === 0) || !connected}
-          className="px-4 h-9 rounded-xl border border-jarvis-cyan/55 text-jarvis-ice bg-gradient-to-b from-jarvis-cyan/15 to-jarvis-cyan/5 hover:from-jarvis-cyan/25 hover:to-jarvis-cyan/10 hover:border-jarvis-cyan text-mono text-[11px] uppercase tracking-[0.25em] disabled:opacity-30 transition-all shadow-[0_0_24px_-8px_rgba(125,211,252,0.5)] shrink-0"
+          className="px-4 h-9 rounded-xl border border-cyan-400 text-cyan-100 bg-gradient-to-r from-cyan-600/30 to-blue-600/30 hover:from-cyan-500/40 hover:to-blue-500/40 hover:border-cyan-300 font-mono text-[11px] uppercase tracking-wider font-semibold disabled:opacity-30 transition-all shadow-[0_0_15px_rgba(34,211,238,0.25)] shrink-0 cursor-pointer"
         >
-          send
+          إرسال
         </button>
       </div>
 
       {(wakeEnabled || micStatus) && (
-        <div className="px-3 pb-1.5 text-[10px] text-mono text-jarvis-cyan/50 shrink-0">
-          {micStatus ? `mic: ${micStatus}` : `listening · say “${wakeWord}” to wake`}
+        <div className="px-3 pb-1 text-[10px] font-mono text-cyan-400/60 shrink-0 flex items-center gap-2">
+          <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 inline-block" />
+          <span>{micStatus ? `الحالة: ${micStatus}` : `قل كلمة التنبيه "${wakeWord}" للتحدث فوراً`}</span>
         </div>
       )}
     </div>

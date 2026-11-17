@@ -25,6 +25,11 @@ export default function ConfirmModal() {
     pop(top.id);
   };
 
+  const isDangerous = top?.permission === "dangerous";
+  const borderColor = isDangerous ? "rgba(251,113,133,0.5)" : "rgba(251,191,36,0.5)";
+  const badgeText = isDangerous ? "DANGEROUS" : "CAUTION";
+  const badgeColor = isDangerous ? "text-jarvis-danger" : "text-jarvis-warn";
+
   return (
     <AnimatePresence>
       {top && (
@@ -33,49 +38,65 @@ export default function ConfirmModal() {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="fixed inset-0 z-[200] flex items-center justify-center bg-jarvis-ink/80 backdrop-blur-sm"
+          className="fixed inset-0 z-[200] flex items-center justify-center"
+          style={{
+            background: "rgba(2,6,12,0.72)",
+            backdropFilter: "blur(4px)",
+          }}
         >
           <motion.div
             initial={{ scale: 0.94, y: 10 }}
             animate={{ scale: 1, y: 0 }}
             exit={{ scale: 0.94, y: 10 }}
-            className="holo-panel max-w-xl w-full mx-4 p-5 relative"
+            className="holo-panel max-w-[480px] w-full mx-4 p-5 relative"
+            style={{
+              borderColor,
+              boxShadow: "0 0 60px rgba(251,113,133,0.15)",
+            }}
           >
-            <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-0.5 bg-jarvis-ink text-display text-[10px] tracking-[0.4em] text-jarvis-cyan border border-jarvis-cyan/40">
-              PERMISSION REQUIRED
+            <h2 className="text-display text-[12px] tracking-[0.3em] mb-4">
+              Permission request <span className="text-jarvis-cyan/50">طلب إذن</span>
+            </h2>
+
+            <div className="flex items-center gap-3 mb-3">
+              <Badge level={top.permission} />
+              <code className="text-mono text-sm text-jarvis-cyan">{top.tool}</code>
             </div>
-            <div className="flex items-baseline justify-between mb-3">
-              <div className="text-display text-jarvis-cyan glow-text text-lg">{top.tool}</div>
-              <PermBadge level={top.permission} />
-            </div>
-            <div className="text-mono text-sm text-jarvis-aqua bg-jarvis-cyan/5 border border-jarvis-cyan/20 p-3 mb-3 break-words">
+
+            <pre className="text-mono text-xs bg-[#030a12] border border-jarvis-cyan/20 p-3 mb-3 break-words whitespace-pre-wrap">
               {top.preview}
-            </div>
+            </pre>
+
             {Object.keys(top.args).length > 0 && (
               <div className="text-mono text-[11px] text-jarvis-cyan/60 mb-3 max-h-32 overflow-y-auto">
                 <div className="text-jarvis-cyan/40 mb-1">args:</div>
                 <pre className="whitespace-pre-wrap">{JSON.stringify(top.args, null, 2)}</pre>
               </div>
             )}
-            <div className="flex gap-2 justify-end pt-2">
+
+            <p className="text-sm text-jarvis-cyan/50 mb-4">
+              هذه الأداة تعدّل النظام. هل تسمح بتنفيذها؟
+            </p>
+
+            <div className="flex gap-2 justify-end">
               <button
                 onClick={() => respond(false)}
-                className="px-4 py-2 border border-jarvis-danger/60 text-jarvis-danger text-mono text-xs uppercase tracking-widest hover:bg-jarvis-danger/10 clip-trap"
+                className="px-4 py-2 border border-jarvis-cyan/30 text-jarvis-cyan text-mono text-xs uppercase tracking-widest hover:bg-jarvis-cyan/10"
               >
-                Deny <span className="opacity-60">(n)</span>
+                رفض · Deny
               </button>
               <button
                 onClick={() => respond(true)}
-                className="px-4 py-2 border border-jarvis-ok/60 text-jarvis-ok text-mono text-xs uppercase tracking-widest hover:bg-jarvis-ok/10 clip-trap"
+                className="px-4 py-2 border border-jarvis-cyan text-jarvis-cyan text-mono text-xs uppercase tracking-widest hover:bg-jarvis-cyan/20 font-semibold"
+                style={{
+                  background: "var(--skin-accent)",
+                  borderColor: "var(--skin-accent)",
+                  color: "#031018",
+                }}
               >
-                Approve <span className="opacity-60">(y)</span>
+                سماح · Allow
               </button>
             </div>
-            {queue.length > 1 && (
-              <div className="absolute -bottom-3 right-3 px-2 py-0.5 bg-jarvis-ink text-mono text-[10px] text-jarvis-cyan/60 border border-jarvis-cyan/30">
-                +{queue.length - 1} queued
-              </div>
-            )}
           </motion.div>
         </motion.div>
       )}
@@ -83,15 +104,15 @@ export default function ConfirmModal() {
   );
 }
 
-function PermBadge({ level }: { level: string }) {
-  const map: Record<string, string> = {
-    safe: "border-jarvis-ok/60 text-jarvis-ok bg-jarvis-ok/5",
-    caution: "border-jarvis-warn/60 text-jarvis-warn bg-jarvis-warn/5",
-    dangerous: "border-jarvis-danger/60 text-jarvis-danger bg-jarvis-danger/10 animate-pulse_glow",
-  };
+function Badge({ level }: { level: string }) {
+  const isDangerous = level === "dangerous";
+  const color = isDangerous ? "text-jarvis-danger" : "text-jarvis-warn";
+  const borderColor = isDangerous ? "border-jarvis-danger" : "border-jarvis-warn";
+  const text = isDangerous ? "DANGEROUS" : "CAUTION";
+
   return (
-    <div className={`text-mono text-[10px] uppercase tracking-widest px-2 py-0.5 border ${map[level] || map.caution}`}>
-      {level}
+    <div className={`text-mono text-[9.5px] uppercase tracking-[0.1em] px-1.5 py-0.5 border ${borderColor} ${color}`}>
+      {text}
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import { nextId, useStore } from "./store";
 import { speak } from "./voice";
+import { API_BASE } from "./api";
 
 type WSMessage = Record<string, any>;
 
@@ -10,8 +11,15 @@ class JarvisWS {
   private listeners: Set<(m: WSMessage) => void> = new Set();
 
   constructor(url?: string) {
-    const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    this.url = url ?? `${proto}//${location.host}/ws`;
+    if (url) {
+      this.url = url;
+    } else if (API_BASE) {
+      // Tauri mode: API_BASE = "http://127.0.0.1:7341" → ws://127.0.0.1:7341/ws
+      this.url = API_BASE.replace(/^http/, "ws") + "/ws";
+    } else {
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      this.url = `${proto}//${location.host}/ws`;
+    }
   }
 
   connect() {
