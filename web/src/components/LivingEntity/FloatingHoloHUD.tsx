@@ -80,58 +80,29 @@ export default function FloatingHoloHUD() {
     return Math.round(Math.min(1, lvl) * 100);
   });
 
-  // Clean assistant message for subtitle ribbon (no raw tags, tool calls, or thinking)
-  const subtitleText = useMemo(() => {
-    for (let i = chat.length - 1; i >= 0; i--) {
-      const msg = chat[i];
-      if (msg.role === "assistant" && msg.text) {
-        const text = msg.text
-          .replace(/<thinking>[\s\S]*?<\/thinking>/gi, "")
-          .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, "")
-          .replace(/<tool_result>[\s\S]*?<\/tool_result>/gi, "")
-          .replace(/<tool_calls>[\s\S]*?<\/tool_calls>/gi, "")
-          .replace(/<[^>]+>/g, "")
-          .replace(/```[\s\S]*?```/g, "")
-          .replace(/[*#`_~]/g, "")
-          .replace(/\s+/g, " ")
-          .trim();
-        if (text) return text;
-      }
-    }
-    if (orbState === "thinking") {
-      return "جارٍ تحليل الاستفسار واسترجاع المعطيات الهولوغرافية...";
-    }
-    return null;
-  }, [chat, orbState]);
-
-  // Subtitle Ribbon Speech State: active during speech and fades out ~3s after
-  const [ribbonRecentSpeech, setRibbonRecentSpeech] = useState(false);
-  const speechTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    if (orbState === "speaking") {
-      if (speechTimerRef.current) clearTimeout(speechTimerRef.current);
-      setRibbonRecentSpeech(true);
-    } else if (ribbonRecentSpeech) {
-      speechTimerRef.current = setTimeout(() => {
-        setRibbonRecentSpeech(false);
-      }, 3000);
-    }
-    return () => {
-      if (speechTimerRef.current) clearTimeout(speechTimerRef.current);
-    };
-  }, [orbState, ribbonRecentSpeech]);
-
-  // Rule: Hologram active -> ribbon only.
-  // No hologram -> bubble stays as history; ribbon shows ONLY while speaking and fades out 3s after speech ends.
-  const showRibbon = Boolean(
-    subtitleText && (holoState.active || orbState === "speaking" || ribbonRecentSpeech)
-  );
-
   return (
     <div className="absolute inset-0 pointer-events-none z-panels overflow-hidden select-none font-sans">
-      {/* ── 1. LEFT DOCK: Live System Instruments (CPU, RAM, Audio, Thermal) ──── */}
-      <div className="absolute top-16 left-6 flex flex-col gap-3 w-76 max-w-[280px] pointer-events-auto animate-fadeIn">
+      {/* ── RIGHT DOCK: Live System Instruments & Holographic Telemetry ──── */}
+      <div className="absolute top-4 right-6 flex flex-col gap-2.5 w-76 max-w-[280px] pointer-events-auto animate-fadeIn max-h-[90vh] overflow-y-auto pr-1">
+        {/* Holographic Conversation Mode indicator */}
+        {holoState.active && (
+          <div className="flex flex-col items-end gap-1 mb-1 shrink-0">
+            <div
+              className="flex items-center gap-2 px-3 py-1 rounded-full border border-cyan-500/30 backdrop-blur-md shadow-[0_0_15px_rgba(34,211,238,0.15)]"
+              style={{ background: "rgba(4, 9, 20, 0.88)" }}
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping" />
+              <span className="text-[10px] font-mono tracking-widest text-cyan-300 uppercase font-semibold">
+                HOLOGRAPHIC MODE
+              </span>
+            </div>
+            {holoState.explodeLevel > 0 && (
+              <span className="text-[10px] font-mono text-amber-300 mr-2 animate-pulse">
+                <bdi>تفكيك حركي للطبقات: {holoState.explodeLevel}%</bdi>
+              </span>
+            )}
+          </div>
+        )}
         <HudPanel
           id="system_telemetry"
           title="SYSTEM TELEMETRY"
@@ -356,62 +327,6 @@ export default function FloatingHoloHUD() {
               histLevels={[65, 80, 92, 75, 88, 95]}
             />
           )}
-        </div>
-      )}
-
-      {/* ── 3. HOLOGRAPHIC CONVERSATION MODE PILL (Top Right Edge) ────────────── */}
-      {holoState.active && (
-        <div className="absolute top-4 right-6 pointer-events-none flex flex-col items-end gap-1">
-          <div
-            className="flex items-center gap-2 px-3 py-1 rounded-full border border-cyan-500/30 backdrop-blur-md shadow-[0_0_15px_rgba(34,211,238,0.15)]"
-            style={{ background: "rgba(4, 9, 20, 0.88)" }}
-          >
-            <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping" />
-            <span className="text-[10px] font-mono tracking-widest text-cyan-300 uppercase font-semibold">
-              HOLOGRAPHIC CONVERSATION MODE
-            </span>
-          </div>
-          {holoState.explodeLevel > 0 && (
-            <span className="text-[10px] font-mono text-amber-300 mr-2 animate-pulse">
-              <bdi>تفكيك حركي للطبقات: {holoState.explodeLevel}%</bdi>
-            </span>
-          )}
-        </div>
-      )}
-
-      {/* ── 4. CENTER BOTTOM: Cleansed Cinematic Subtitle Ribbon ──────────────── */}
-      {showRibbon && (
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 w-11/12 max-w-xl z-dialogue pointer-events-auto animate-fadeIn">
-          <div
-            className="hud-corner-box relative px-6 py-3.5 rounded-xl border border-cyan-400/40 shadow-[0_20px_50px_rgba(0,0,0,0.85)] backdrop-blur-2xl text-center"
-            style={{
-              background:
-                "linear-gradient(168deg, rgba(6, 12, 26, 0.95) 0%, rgba(2, 6, 16, 0.98) 100%)",
-              boxShadow:
-                "0 20px 50px rgba(0,0,0,0.8), inset 0 1px 0 rgba(196, 228, 255, 0.2)",
-            }}
-          >
-            {/* Top beam hairline */}
-            <div className="hud-beam-hairline" />
-
-            <div className="flex items-center justify-center gap-2 text-[10px] font-mono text-cyan-400 uppercase tracking-widest mb-1.5 select-none">
-              <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
-              <span>JARVIS AUDIO COMS</span>
-              {orbState === "speaking" && (
-                <span className="text-[10px] text-amber-300 font-bold animate-pulse">
-                  ● TRANSMITTING
-                </span>
-              )}
-            </div>
-
-            {/* Clean speech text with strict bidirectional direction handling */}
-            <p
-              dir="auto"
-              className="text-xs lg:text-sm text-slate-100 font-medium leading-relaxed line-clamp-3"
-            >
-              <bdi>{subtitleText}</bdi>
-            </p>
-          </div>
         </div>
       )}
     </div>

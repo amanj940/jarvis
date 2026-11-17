@@ -243,10 +243,10 @@ export default function LivingEntityCore() {
       className="relative w-full h-full overflow-hidden select-none"
       style={{ touchAction: "none" }}
     >
-      {/* ── Co-located Entity Canvas & HUD Rings Container (Above 120px Safe Zone) ── */}
+      {/* ── Co-located Entity Canvas & HUD Rings Container (Full Stage Centered) ── */}
       <div
         id="living-entity-container"
-        className="absolute top-0 left-0 right-0 bottom-[120px] flex items-center justify-center overflow-hidden"
+        className="absolute inset-0 flex items-center justify-center overflow-hidden"
         onClick={handleEntityClick}
         title="انقر لتشغيل أو إيقاف المايكروفون (Click to toggle microphone)"
       >
