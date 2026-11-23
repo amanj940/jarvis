@@ -17,6 +17,8 @@ import { refreshVoiceProfile, streamSpeak, mic } from "./lib/voice";
 import { wsClient } from "./lib/ws";
 import { holoOrchestrator } from "./lib/holoOrchestrator";
 import { useSystemStats } from "./lib/useSystemStats";
+import NeonWindowHost from "./components/NeonWindows/NeonWindowHost";
+import { useNeonWindowStore } from "./components/NeonWindows/windowStore";
 
 const GREETING_SESSION_KEY = "jarvis.greeting.sent.v1";
 
@@ -43,6 +45,10 @@ export default function App() {
         const st = useStore.getState();
         if (st.confirmQueue.length > 0) {
           st.popConfirm(st.confirmQueue[0].id);
+          return;
+        }
+        // Neon windows are the topmost layer: Esc closes the topmost one first.
+        if (useNeonWindowStore.getState().closeTopmost()) {
           return;
         }
         if (st.settingsOpen) {
@@ -191,5 +197,11 @@ export default function App() {
   }, [booted, pushChat]);
 
   // ── 6. Unified Single Screen: Minimal Living Intelligence Interface ──────
-  return <LivingEntityScreen />;
+  // Neon windows float above it (mounted here so they survive any screen).
+  return (
+    <>
+      <LivingEntityScreen />
+      <NeonWindowHost />
+    </>
+  );
 }
