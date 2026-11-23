@@ -1,4 +1,7 @@
 @echo off
+:: JARVIS — dev launch: backend (--no-browser) + Vite dev server (HMR).
+:: Same backend as run.bat (`python -m jarvis.main`); only the UI differs.
+:: Frontend: http://127.0.0.1:5173 — see docs/launch.md.
 :: Dev mode — launches both the Python backend AND the Vite dev server (HMR).
 :: Open http://127.0.0.1:5173 for the Vite-proxied frontend.
 setlocal

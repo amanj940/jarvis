@@ -140,12 +140,29 @@ def main(argv: list[str] | None = None) -> int:
     print()
 
     if not args.no_browser and WEB_DIST.exists():
+        # Wait for /api/health before opening the browser, so the user never
+        # lands on a dead page while uvicorn is still starting. Electron
+        # does the same wait in electron/main.cjs (loadApp/waitForBackend).
+        # If the backend never becomes healthy, skip the browser open and
+        # say so — the server keeps running and can be retried by hand.
         import threading
         import time
+        import urllib.request
         import webbrowser
 
         def _open():
-            time.sleep(0.8)
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                try:
+                    with urllib.request.urlopen(f"{url}/api/health", timeout=2) as resp:
+                        if resp.status == 200:
+                            break
+                except Exception:  # noqa: BLE001
+                    pass
+                time.sleep(0.5)
+            else:
+                logger.warning("browser not opened: /api/health not ready in 30s")
+                return
             try:
                 webbrowser.open(url)
             except Exception:  # noqa: BLE001

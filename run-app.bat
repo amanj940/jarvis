@@ -1,4 +1,8 @@
 @echo off
+:: JARVIS — desktop launch: Electron shell.
+:: Electron spawns the SAME backend (`python -m jarvis.main --no-browser`)
+:: and waits up to 60s for /api/health before showing the window.
+:: See docs/launch.md and electron/main.cjs (startBackend/loadApp).
 setlocal EnableDelayedExpansion
 chcp 65001 >nul 2>&1
 

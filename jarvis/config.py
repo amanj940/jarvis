@@ -2,6 +2,15 @@
 
 Reads `config.yaml` from the project root, merges in environment variables
 from `.env`, validates with Pydantic, and exposes a typed `Config` object.
+
+Source of truth: `config.yaml` wins whenever it is present. The Pydantic
+defaults below deliberately mirror `config.yaml`, so a missing or partial
+config file behaves exactly like the shipped one. If you change a value in
+`config.yaml`, update the matching default here too.
+
+The assistant persona is NOT stored here: it lives in `persona/jarvis.md`
+and is loaded by `load_config` (see `AssistantConfig.persona_file`). An
+inline `persona:` in `config.yaml` still works and takes precedence.
 """
 from __future__ import annotations
 
@@ -20,13 +29,13 @@ DEFAULT_ENV_PATH = PROJECT_ROOT / ".env"
 
 class ModelConfig(BaseModel):
     provider: str = "openai_compatible"
-    endpoint: str = "http://localhost:1234/v1"
-    model: str = "local-model"
-    api_key_env: str = "LLM_API_KEY"
+    endpoint: str = "http://localhost:11434/v1"  # mirrors config.yaml
+    model: str = "gemma4:31b-cloud"  # mirrors config.yaml
+    api_key_env: str = "OLLAMA_API_KEY"  # mirrors config.yaml
     temperature: float = 0.3
-    max_tokens: int = 4096
-    request_timeout_seconds: int = 120
-    native_tool_calls: bool = False
+    max_tokens: int = 16384  # mirrors config.yaml
+    request_timeout_seconds: int = 180  # mirrors config.yaml
+    native_tool_calls: bool = True  # mirrors config.yaml
     reasoning_effort: str | None = None
     # Anti-repetition — light touch. Higher values degrade fluency and can
     # paradoxically push the model into longer loops. Ollama already
@@ -50,6 +59,9 @@ class ImageModelConfig(BaseModel):
 
 
 class PermissionsConfig(BaseModel):
+    # NOTE: config.yaml sets mode: bypass. The code default stays
+    # "confirm" on purpose — a missing config.yaml must never silently
+    # auto-allow every tool. The yaml value wins when the file is present.
     mode: str = "confirm"
     denylist: list[str] = Field(default_factory=list)
 
@@ -98,7 +110,12 @@ class PluginToggle(BaseModel):
 
 class AssistantConfig(BaseModel):
     name: str = "JARVIS"
+    # Short fallback used only when neither an inline `persona:` in
+    # config.yaml nor the persona file below can be found.
     persona: str = "You are JARVIS, a calm, precise, proactive local AI assistant."
+    # Single source of truth for the full persona text. Relative paths are
+    # resolved against the config file's directory, then the project root.
+    persona_file: str = "persona/jarvis.md"
 
 
 class MissionConfig(BaseModel):
@@ -117,7 +134,7 @@ class UltimateConfig(BaseModel):
 
     # — Intelligence —
     semantic_memory: bool = True
-    embed_model: str = "text-embedding-3-small"
+    embed_model: str = "nomic-embed-text"  # mirrors config.yaml
     # Blank → reuse the main model endpoint. Point elsewhere (e.g. a local
     # Ollama/LM-Studio embeddings server) to decouple embeddings from chat.
     embed_endpoint: str = ""
@@ -153,16 +170,16 @@ class VoiceConfig(BaseModel):
     edge_rate: str = "-6%"
     edge_pitch: str = "+0Hz"
     # Piper (community JARVIS model, closest to Paul Bettany)
-    piper_enabled: bool = False
+    piper_enabled: bool = True  # mirrors config.yaml
     piper_model: str = "data/voices/jarvis.onnx"
     piper_speaker: int = 0
-    piper_length_scale: float = 1.32
+    piper_length_scale: float = 1.0  # mirrors config.yaml
     piper_noise_scale: float = 0.55
     piper_noise_w_scale: float = 0.72
     piper_volume: float = 1.15
     riva_enabled: bool = False
-    riva_server: str = "localhost:50051"
-    riva_voice: str = "English-US.Female-1"
+    riva_server: str = "grpc.nvcf.nvidia.com:443"  # mirrors config.yaml
+    riva_voice: str = "Magpie-Multilingual.EN-US.Leo"  # mirrors config.yaml
     riva_language_code: str = "en-US"
     riva_sample_rate_hz: int = 44100
     nvidia_waveglow_model_url: str = (
@@ -207,15 +224,42 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     return out
 
 
+def _load_persona_text(cfg_path: Path, raw: dict[str, Any], cfg: Config) -> None:
+    """Fill `cfg.A.persona` from `persona/jarvis.md` when no inline persona
+    was given in the config file.
+
+    Precedence: inline `A.persona:` in config.yaml > file named by
+    `A.persona_file:` (resolved against the config file's directory, then
+    the project root) > the short built-in fallback in `AssistantConfig`.
+    A missing/unreadable file is not an error — the fallback stands.
+    """
+    raw_a = raw.get("A")
+    if isinstance(raw_a, dict) and "persona" in raw_a:
+        return
+    candidate = Path((raw_a or {}).get("persona_file") or cfg.A.persona_file)
+    bases = [cfg_path.parent, PROJECT_ROOT] if not candidate.is_absolute() else [Path("/")]
+    for base in bases:
+        persona_path = candidate if candidate.is_absolute() else base / candidate
+        try:
+            if persona_path.is_file():
+                text = persona_path.read_text(encoding="utf-8").strip()
+                if text:
+                    cfg.A.persona = text
+                return
+        except OSError:
+            continue
+
+
 def load_config(path: Path | None = None) -> Config:
     if DEFAULT_ENV_PATH.exists():
         load_dotenv(DEFAULT_ENV_PATH)
 
     cfg_path = path or DEFAULT_CONFIG_PATH
-    if not cfg_path.exists():
-        return Config()
+    raw: dict[str, Any] = {}
+    if cfg_path.exists():
+        with cfg_path.open("r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
 
-    with cfg_path.open("r", encoding="utf-8") as f:
-        raw = yaml.safe_load(f) or {}
-
-    return Config(**raw)
+    cfg = Config(**raw)
+    _load_persona_text(cfg_path, raw, cfg)
+    return cfg

@@ -144,6 +144,9 @@ notepad config.yaml   :: point `model.endpoint` at your LLM
 run.bat
 ```
 
+Launch paths (production / desktop / dev) and the `/api/health` contract
+are documented in [docs/launch.md](docs/launch.md).
+
 Then open the desktop app (Electron) — or visit:
 
 ```
