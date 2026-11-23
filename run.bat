@@ -1,4 +1,7 @@
 @echo off
+:: JARVIS — production launch: backend + browser UI.
+:: Single launch path: this starts `python -m jarvis.main`, which waits
+:: for /api/health before opening the browser. See docs/launch.md.
 setlocal
 
 if not exist venv\Scripts\activate.bat (

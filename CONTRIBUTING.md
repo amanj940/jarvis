@@ -33,7 +33,8 @@ jarvis/        Python backend — server routes, orchestrator, agents, tool plug
 web/           React + Three.js HUD frontend
 electron/      Desktop shell
 docs/          Model download guide, screenshots
-config.yaml    All configuration (persona, model, voice, permissions, plugins)
+config.yaml    All configuration (model, voice, permissions, plugins)
+persona/       Assistant persona text (persona/jarvis.md, loaded by config)
 ```
 
 ---

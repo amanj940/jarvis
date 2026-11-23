@@ -1,10 +1,23 @@
-"""Quick test: verify Gemini API key works with function calling."""
+"""Manual check: verify Gemini API key works with function calling.
+
+Moved from data/test_gemini.py (Phase 1 cleanup). Run directly:
+    python tests/test_gemini.py
+or as a pytest test with a key + network enabled:
+    JARVIS_RUN_NETWORK_TESTS=1 GEMINI_API_KEY=... pytest tests/test_gemini.py
+"""
+import os
+import pytest
+
+NETWORK_TESTS_ENABLED = os.environ.get("JARVIS_RUN_NETWORK_TESTS") == "1"
+requires_network = pytest.mark.skipif(
+    not NETWORK_TESTS_ENABLED,
+    reason="network test: set JARVIS_RUN_NETWORK_TESTS=1 to run",
+)
 import asyncio
 import httpx
 import json
-import os
 
-async def test():
+async def run_check():
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("Set GEMINI_API_KEY before running this test.")
@@ -49,4 +62,13 @@ async def test():
             print("No tool calls (model responded directly)")
         print("API TEST PASSED")
 
-asyncio.run(test())
+if __name__ == "__main__":
+    asyncio.run(run_check())
+
+
+@requires_network
+def test_gemini_tool_calling():
+    """End-to-end: Gemini answers with a native tool call (needs a key)."""
+    if not os.environ.get("GEMINI_API_KEY", "").strip():
+        pytest.skip("GEMINI_API_KEY not set")
+    asyncio.run(run_check())
