@@ -32,6 +32,7 @@ import {
 } from "./shaders/particleMorphShaders";
 import FloatingHoloHUD from "./FloatingHoloHUD";
 import HudRings from "./HudRings";
+import EarthGlobe, { GlobeErrorBoundary } from "../Globe/EarthGlobe";
 import { getHudTheme, HUD_THEMES } from "../../lib/hudTheme";
 import { useReducedMotion } from "../../lib/useReducedMotion";
 
@@ -222,6 +223,8 @@ function VolumetricMorphMesh({ reducedMotion = false }: { reducedMotion?: boolea
 // ── Root Living Entity Component ──────────────────────────────────────────────
 export default function LivingEntityCore() {
   const [tabHidden, setTabHidden] = useState(false);
+  // If the Earth globe ever fails to render, fall back to the old orb.
+  const [globeFailed, setGlobeFailed] = useState(false);
   const reducedMotion = useReducedMotion();
 
   // Tab visibility: pause render loop when tab is hidden
@@ -262,7 +265,14 @@ export default function LivingEntityCore() {
           }}
           className="w-full h-full block cursor-pointer active:cursor-grabbing"
         >
-          <VolumetricMorphMesh reducedMotion={reducedMotion} />
+          {/* Earth globe (centre) — falls back to the old particle orb on failure */}
+          {globeFailed ? (
+            <VolumetricMorphMesh reducedMotion={reducedMotion} />
+          ) : (
+            <GlobeErrorBoundary onError={() => setGlobeFailed(true)}>
+              <EarthGlobe reducedMotion={reducedMotion} />
+            </GlobeErrorBoundary>
+          )}
           <OrbitControls
             target={[0, 0, 0]}
             enableZoom={false}
