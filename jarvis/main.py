@@ -80,6 +80,11 @@ def build_services(cfg_path: str | None):
     registry = PluginRegistry(cfg, services=services)
     registry.load_all()
 
+    # Phase 4: persistent tasks (SQLite, survives restart). Scheduler
+    # starts in the server lifespan (needs a running event loop).
+    from .core.tasks import build_task_system
+    task_store, task_scheduler = build_task_system(cfg, memory=memory, actions=actions)
+
     hooks = HookRegistry()
     orchestrator = Orchestrator(
         cfg=cfg,
@@ -95,12 +100,12 @@ def build_services(cfg_path: str | None):
     registry.services["orchestrator"] = orchestrator
     agents = build_default_registry(cfg)
 
-    return cfg, logger, brain, registry, memory, permissions, actions, orchestrator, agents
+    return cfg, logger, brain, registry, memory, permissions, actions, orchestrator, agents, task_store, task_scheduler
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    cfg, logger, brain, registry, memory, perms, actions, orch, agents = build_services(args.config)
+    cfg, logger, brain, registry, memory, perms, actions, orch, agents, task_store, task_scheduler = build_services(args.config)
 
     logger.info("JARVIS booting — provider=%s model=%s endpoint=%s",
                 cfg.model.provider, cfg.model.model, cfg.model.endpoint)
@@ -128,6 +133,8 @@ def main(argv: list[str] | None = None) -> int:
         memory=memory,
         agents=agents,
         web_dist=WEB_DIST if WEB_DIST.exists() else None,
+        task_store=task_store,
+        task_scheduler=task_scheduler,
     )
 
     url = f"http://{args.host}:{args.port}"

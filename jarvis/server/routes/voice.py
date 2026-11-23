@@ -26,11 +26,14 @@ from ...models.tts import (
     _synthesize_with_piper,
     _synthesize_with_riva,
 )
+from ...core.voice_state import VoiceState
 from ...models.whisper import (
     _filter_whisper_hallucination,
     _get_whisper_model,
     _switch_whisper_to_cpu,
     _whisper_lock,
+    build_transcribe_kwargs,
+    get_stt_language,
 )
 from ...core.vram_manager import flush_gpu as _vram_flush
 from .common import _services
@@ -39,8 +42,17 @@ router = APIRouter()
 _stt_log = logging.getLogger("jarvis.stt")
 
 @router.post("/stt")
-async def speech_to_text(audio: UploadFile = File(...)):
-    """Receive audio from browser MediaRecorder, transcribe with Whisper."""
+async def speech_to_text(request: Request, audio: UploadFile = File(...), language: str | None = None):
+    """Receive audio from browser MediaRecorder, transcribe with Whisper.
+
+    Language: ``?language=`` override, else ``voice.stt_language``
+    (Phase 4 default ``"ar"`` — see jarvis/models/whisper.py
+    ``build_transcribe_kwargs``). No hardcoded ``language="en"`` remains.
+    """
+    cfg, orch, *_ = _services(request)
+    vs = getattr(orch, "voice_state", None)
+    if vs is not None:
+        vs.begin_listening("stt request")
     import asyncio
     data = await audio.read()
     if not data:
@@ -62,21 +74,9 @@ async def speech_to_text(audio: UploadFile = File(...)):
     #   * temperature=0 — deterministic greedy decode, no sampled fallback.
     #   * initial_prompt biases the LM away from the YouTube-style outro
     #     phrases and toward technical assistant vocabulary.
-    _WHISPER_KW: dict = dict(
-        language="en",
-        beam_size=1,
-        vad_filter=True,
-        vad_parameters={"min_silence_duration_ms": 400, "threshold": 0.45},
-        condition_on_previous_text=False,
-        no_speech_threshold=0.7,
-        log_prob_threshold=-1.0,
-        compression_ratio_threshold=2.4,
-        temperature=0.0,
-        initial_prompt=(
-            "JARVIS command. Search, generate image, open page, run code, "
-            "show news, list videos, open the file."
-        ),
-    )
+    # Phase 4: language + initial prompt come from config (voice.stt_language,
+    # default "ar") via build_transcribe_kwargs; ?language= overrides per call.
+    _WHISPER_KW: dict = build_transcribe_kwargs(cfg, language=language)
 
     def _post_process(text: str) -> str:
         """Drop common Whisper hallucinations on near-silent audio."""
@@ -113,7 +113,9 @@ async def speech_to_text(audio: UploadFile = File(...)):
         loop = asyncio.get_event_loop()
         text = await loop.run_in_executor(None, _run_whisper, tmp.name)
         _stt_log.info("STT: transcript = '%s'", text)
-        return {"text": text}
+        if vs is not None:
+            vs.begin_thinking("transcript ready")
+        return {"text": text, "language": _WHISPER_KW.get("language")}
     except Exception as e:
         _stt_log.error("STT: Whisper failed: %s", e)
         return JSONResponse({"text": "", "error": f"Whisper error: {e}"}, status_code=500)
@@ -148,8 +150,11 @@ async def tts_status(request: Request):
         voice = cfg.voice.edge_voice
         lang = "en-GB"
 
+    vs = getattr(getattr(request.app.state, "orchestrator", None), "voice_state", None)
     return {
         "available": edge_available or riva_ready or piper_ready,
+        "voice_state": vs.value if vs is not None else "idle",
+        "stt_language": get_stt_language(cfg),
         "provider": provider,
         "requested_provider": cfg.voice.provider,
         "voice": voice,
@@ -182,9 +187,62 @@ async def tts_status(request: Request):
         },
     }
 
+@router.get("/voice/state")
+async def voice_state(request: Request):
+    """Current unified voice state (Phase 4 state machine)."""
+    cfg, orch, *_ = _services(request)
+    vs = getattr(orch, "voice_state", None)
+    return {"state": vs.value if vs is not None else "idle",
+            "history": vs.history()[-10:] if vs is not None else [],
+            "stt_language": get_stt_language(cfg)}
+
+
+class VoiceStateBody(BaseModel):
+    state: str
+    reason: str = ""
+
+
+@router.post("/voice/state")
+async def set_voice_state(request: Request, body: VoiceStateBody):
+    """Let the frontend report its side of voice state (e.g. TTS playback
+    started/ended in the browser) so backend and frontend agree on one
+    state. Illegal transitions are rejected with 409, not forced.
+    """
+    cfg, orch, *_ = _services(request)
+    vs = getattr(orch, "voice_state", None)
+    if vs is None:
+        return JSONResponse({"ok": False, "error": "no voice state machine"}, status_code=503)
+    try:
+        target = VoiceState(body.state)
+    except ValueError:
+        return JSONResponse({"ok": False, "error": f"unknown voice state: {body.state}"}, status_code=400)
+    if not vs.transition(target, body.reason or "frontend report"):
+        return JSONResponse({"ok": False, "error": f"illegal transition to {target.value}",
+                             "state": vs.value}, status_code=409)
+    return {"ok": True, "state": vs.value}
+
+
+@router.post("/voice/interrupt")
+async def voice_interrupt(request: Request):
+    """Barge-in: user spoke / cancelled while JARVIS was speaking or
+    thinking. Moves the state machine to interrupted -> listening.
+    Cancelling the in-flight LLM turn itself is the WS layer's job
+    (``{"type": "cancel"}`` / a new chat); this endpoint only fixes state.
+    """
+    cfg, orch, *_ = _services(request)
+    vs = getattr(orch, "voice_state", None)
+    if vs is None:
+        return JSONResponse({"ok": False, "error": "no voice state machine"}, status_code=503)
+    interrupted = vs.barge_in("api interrupt")
+    return {"ok": True, "interrupted": interrupted, "state": vs.value}
+
+
 @router.post("/tts")
 async def tts(request: Request, body: TTSBody):
-    cfg, *_ = _services(request)
+    cfg, orch, *_ = _services(request)
+    vs = getattr(orch, "voice_state", None)
+    if vs is not None:
+        vs.begin_speaking("tts request")
     text = (body.text or "").strip()
     if not text:
         return JSONResponse({"ok": False, "error": "empty text"}, status_code=400)

@@ -82,3 +82,32 @@ class ActionLog:
         except OSError:
             # never let logging crash the assistant
             pass
+
+
+    def recent(self, n: int = 100, only_failed: bool = False) -> list[dict]:
+        """Last `n` action-log entries (newest first).
+
+        Phase 4: failures are visible here — ``only_failed=True`` returns
+        entries whose action is ``failed``/``denied`` or whose ``ok`` is
+        False. A missing/unreadable log file returns [].
+        """
+        try:
+            lines = self.path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+        out: list[dict] = []
+        for line in reversed(lines):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if only_failed:
+                if entry.get("action") not in ("failed", "denied") and entry.get("ok") is not False:
+                    continue
+            out.append(entry)
+            if len(out) >= n:
+                break
+        return out

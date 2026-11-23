@@ -127,9 +127,46 @@ async def stream_logs(request: Request):
         },
     )
 
+async def _probe_model_endpoint(cfg) -> dict:
+    """Phase 4: actually ask the model endpoint if it answers.
+
+    GET {endpoint}/models with a 2 s timeout. Never raises and never
+    blocks health for long — an unreachable model is reported, not fatal.
+    """
+    url = cfg.model.endpoint.rstrip("/") + "/models"
+    headers = {}
+    if cfg.model.api_key:
+        headers["Authorization"] = f"Bearer {cfg.model.api_key}"
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            resp = await client.get(url, headers=headers)
+        return {"reachable": resp.status_code < 500, "status_code": resp.status_code}
+    except Exception as e:  # noqa: BLE001
+        return {"reachable": False, "error": f"{type(e).__name__}: {e}"}
+
+
 @router.get("/health")
 async def health(request: Request):
     cfg, orch, registry, memory, agents = _services(request)
+    model_probe = await _probe_model_endpoint(cfg)
+    # Voice availability is probed WITHOUT loading any model (import +
+    # file checks only) — health must stay cheap.
+    try:
+        from ...models.tts import _edge_tts_available, _piper_available
+        whisper_available = True
+        try:
+            import faster_whisper  # noqa: F401
+        except Exception:  # noqa: BLE001
+            whisper_available = False
+        voice_avail = {
+            "whisper_available": whisper_available,
+            "piper_available": _piper_available(cfg),
+            "edge_tts_available": _edge_tts_available(),
+        }
+    except Exception as e:  # noqa: BLE001
+        voice_avail = {"error": str(e)}
+    vs = getattr(orch, "voice_state", None)
+    task_store = getattr(request.app.state, "task_store", None)
     return {
         "status": "online",
         "name": cfg.A.name,
@@ -138,14 +175,143 @@ async def health(request: Request):
             "model": cfg.model.model,
             "endpoint": cfg.model.endpoint,
             "configured": bool(cfg.model.api_key),
+            **model_probe,
         },
         "image_model": getattr(getattr(cfg, "image_model", None), "selected", "flux2-klein"),
         "plugins": [p.name for p in registry.plugins()],
         "tools": len(registry.all_tools()),
         "agents": agents.names(),
         "permission_mode": cfg.permissions.mode,
-        "voice": {"wake_word": cfg.voice.wake_word},
+        "voice": {"wake_word": cfg.voice.wake_word,
+                  "stt_language": getattr(cfg.voice, "stt_language", "ar"),
+                  "state": vs.value if vs is not None else "idle",
+                  **voice_avail},
+        "tasks": {"pending": len(task_store.list_tasks(status="pending")) if task_store else None},
     }
+
+
+# --- Action log (Phase 4): failures visible via API, not just a file -----
+@router.get("/actions")
+async def get_actions(request: Request, n: int = 100, only_failed: bool = False):
+    """Last `n` action-log entries (newest first).
+
+    ``?only_failed=true`` returns only failed/denied tool invocations —
+    the auditable surface for "what went wrong".
+    """
+    cfg, *_ = _services(request)
+    from ...core.logger import ActionLog
+
+    log = ActionLog(cfg)
+    return {"actions": log.recent(n=n, only_failed=only_failed)}
+
+
+# --- Persistent tasks (Phase 4) -------------------------------------------
+def _task_store(request: Request):
+    return getattr(request.app.state, "task_store", None)
+
+
+def _task_scheduler(request: Request):
+    return getattr(request.app.state, "task_scheduler", None)
+
+
+class TaskBody(BaseModel):
+    title: str
+    kind: str = "reminder"
+    payload: dict = {}
+    schedule: str | None = None
+    run_at: str | float | None = None
+
+
+class TaskUpdateBody(BaseModel):
+    title: str | None = None
+    kind: str | None = None
+    payload: dict | None = None
+    schedule: str | None = None
+    status: str | None = None
+    run_at: str | float | None = None
+
+
+@router.get("/tasks")
+async def list_tasks(request: Request, status: str | None = None, kind: str | None = None):
+    store = _task_store(request)
+    if store is None:
+        return JSONResponse({"error": "task system not initialised"}, status_code=503)
+    return {"tasks": store.list_tasks(status=status, kind=kind)}
+
+
+@router.post("/tasks")
+async def create_task(request: Request, body: TaskBody):
+    store = _task_store(request)
+    if store is None:
+        return JSONResponse({"error": "task system not initialised"}, status_code=503)
+    try:
+        task = store.create(title=body.title, kind=body.kind, payload=body.payload,
+                            schedule=body.schedule, run_at=body.run_at)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    sched = _task_scheduler(request)
+    if sched is not None:
+        sched.schedule_task(task)
+    return task
+
+
+@router.get("/tasks/{task_id}")
+async def get_task(request: Request, task_id: int):
+    store = _task_store(request)
+    if store is None:
+        return JSONResponse({"error": "task system not initialised"}, status_code=503)
+    task = store.get(task_id)
+    if task is None:
+        return JSONResponse({"error": f"no task {task_id}"}, status_code=404)
+    return task
+
+
+@router.patch("/tasks/{task_id}")
+async def update_task(request: Request, task_id: int, body: TaskUpdateBody):
+    store = _task_store(request)
+    if store is None:
+        return JSONResponse({"error": "task system not initialised"}, status_code=503)
+    fields = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
+    if "run_at" in fields:
+        fields["next_run"] = fields.pop("run_at")
+    try:
+        task = store.update(task_id, **fields)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    if task is None:
+        return JSONResponse({"error": f"no task {task_id}"}, status_code=404)
+    sched = _task_scheduler(request)
+    if sched is not None:
+        sched.unschedule_task(task_id)
+        sched.schedule_task(task)
+    return task
+
+
+@router.post("/tasks/{task_id}/cancel")
+async def cancel_task(request: Request, task_id: int):
+    store = _task_store(request)
+    if store is None:
+        return JSONResponse({"error": "task system not initialised"}, status_code=503)
+    task = store.cancel(task_id)
+    if task is None:
+        return JSONResponse({"error": f"no task {task_id}"}, status_code=404)
+    sched = _task_scheduler(request)
+    if sched is not None:
+        sched.unschedule_task(task_id)
+    return task
+
+
+@router.post("/tasks/{task_id}/run")
+async def run_task_now(request: Request, task_id: int):
+    """Run a task immediately (also the manual trigger for a pending task)."""
+    sched = _task_scheduler(request)
+    store = _task_store(request)
+    if store is None or sched is None:
+        return JSONResponse({"error": "task system not initialised"}, status_code=503)
+    try:
+        return await sched.run_task(task_id)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=404)
 
 @router.get("/stats")
 async def stats(request: Request):

@@ -109,6 +109,15 @@ class MemoryStore:
     def top_commands(self, limit: int = 10) -> list[dict]:
         return self.keyword.top_commands(limit)
 
+    def add_goal(self, project: str, title: str, notes: str = "") -> int:
+        return self.keyword.add_goal(project, title, notes)
+
+    def goals(self, project: str | None = None, status: str | None = None) -> list[dict]:
+        return self.keyword.goals(project, status)
+
+    def complete_goal(self, goal_id: int, done: bool = True) -> dict | None:
+        return self.keyword.complete_goal(goal_id, done)
+
     def add_fix(self, signature: str, fix: str, context: str = "") -> None:
         self.keyword.add_fix(signature, fix, context)
 

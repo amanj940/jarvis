@@ -11,6 +11,7 @@ off for a short window instead of hammering a dead endpoint on every turn.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -60,16 +61,28 @@ class EmbeddingClient:
             headers["Authorization"] = f"Bearer {self.api_key}"
         payload: dict[str, Any] = {"model": self.model, "input": texts}
 
-        try:
-            resp = await self._client.post(self.url, json=payload, headers=headers)
-            resp.raise_for_status()
-        except httpx.HTTPError as e:
-            self._disabled_until = time.time() + _RETRY_BACKOFF_S
-            log.warning(
-                "embeddings unavailable (%s) — semantic memory falls back to "
-                "keyword search; retry in %ds", e, int(_RETRY_BACKOFF_S),
-            )
-            return None
+        resp = None
+        for attempt in range(3):
+            try:
+                resp = await self._client.post(self.url, json=payload, headers=headers)
+                resp.raise_for_status()
+                break
+            except httpx.HTTPError as e:
+                transient = isinstance(e, (httpx.TransportError, httpx.TimeoutException)) or (
+                    isinstance(e, httpx.HTTPStatusError)
+                    and e.response is not None
+                    and (e.response.status_code == 429 or e.response.status_code >= 500)
+                )
+                if transient and attempt + 1 < 3:
+                    await asyncio.sleep(0.2 * (2 ** attempt))
+                    continue
+                self._disabled_until = time.time() + _RETRY_BACKOFF_S
+                log.warning(
+                    "embeddings unavailable (%s) — semantic memory falls back to "
+                    "keyword search; retry in %ds", e, int(_RETRY_BACKOFF_S),
+                )
+                return None
+        assert resp is not None
 
         try:
             data = resp.json()

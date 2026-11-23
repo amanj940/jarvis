@@ -61,6 +61,8 @@ def create_app(
     memory: MemoryStore,
     agents,
     web_dist: Path | None = None,
+    task_store=None,
+    task_scheduler=None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -78,6 +80,14 @@ def create_app(
 
         log.info("server up — model=%s tools=%d agents=%d",
                  cfg.model.model, len(registry.all_tools()), len(agents.list()))
+
+        # Phase 4: start the persistent task scheduler — it re-arms every
+        # pending task from SQLite, so tasks survive a restart.
+        if task_scheduler is not None:
+            try:
+                task_scheduler.start()
+            except Exception as e:  # noqa: BLE001
+                log.warning("task scheduler failed to start: %s", e)
 
         # ── Optional model preload (Phase 3: OFF by default) ──
         # Whisper (~1.5 GB) + Piper load LAZILY on first STT/TTS use —
@@ -135,6 +145,9 @@ def create_app(
 
         yield
 
+        if task_scheduler is not None:
+            await task_scheduler.shutdown()
+
         if preload_task is not None:
             preload_task.cancel()
             try:
@@ -158,6 +171,8 @@ def create_app(
     app.state.registry = registry
     app.state.memory = memory
     app.state.agents = agents
+    app.state.task_store = task_store
+    app.state.task_scheduler = task_scheduler
 
     app.include_router(routes.router, prefix="/api")
     app.add_api_websocket_route("/ws", ws.websocket_endpoint)

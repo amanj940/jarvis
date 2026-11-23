@@ -8,6 +8,7 @@ Tables:
   known_paths        — labeled important paths
   installed_tools    — tools/libs JARVIS knows are installed
   conversations     — recent chat history (rolling)
+  project_goals    — per-project goals (Phase 4)
 """
 from __future__ import annotations
 
@@ -65,6 +66,17 @@ CREATE TABLE IF NOT EXISTS conversations (
 );
 CREATE INDEX IF NOT EXISTS idx_conv_created ON conversations(created_at);
 CREATE INDEX IF NOT EXISTS idx_notes_project ON project_notes(project);
+CREATE TABLE IF NOT EXISTS project_goals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project TEXT NOT NULL,
+    title TEXT NOT NULL,
+    notes TEXT,
+    status TEXT NOT NULL DEFAULT 'open',
+    created_at REAL NOT NULL,
+    completed_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_goals_project ON project_goals(project);
+CREATE INDEX IF NOT EXISTS idx_goals_status ON project_goals(status);
 """
 
 
@@ -127,6 +139,42 @@ class Memory:
                     "SELECT * FROM project_notes ORDER BY created_at DESC"
                 ).fetchall()
             return [dict(r) for r in rows]
+
+    # ---- project goals (Phase 4) ----
+    def add_goal(self, project: str, title: str, notes: str = "") -> int:
+        if not (title or "").strip():
+            raise ValueError("goal title must not be blank")
+        with self._conn() as c:
+            cur = c.execute(
+                "INSERT INTO project_goals(project,title,notes,status,created_at,completed_at)"
+                " VALUES(?,?,?,'open',?,NULL)",
+                (project, title.strip(), notes, time.time()),
+            )
+            return cur.lastrowid
+
+    def goals(self, project: str | None = None, status: str | None = None) -> list[dict]:
+        q = "SELECT * FROM project_goals"
+        clauses, args = [], []
+        if project:
+            clauses.append("project=?")
+            args.append(project)
+        if status:
+            clauses.append("status=?")
+            args.append(status)
+        if clauses:
+            q += " WHERE " + " AND ".join(clauses)
+        q += " ORDER BY created_at DESC"
+        with self._conn() as c:
+            return [dict(r) for r in c.execute(q, args).fetchall()]
+
+    def complete_goal(self, goal_id: int, done: bool = True) -> dict | None:
+        with self._conn() as c:
+            c.execute(
+                "UPDATE project_goals SET status=?, completed_at=? WHERE id=?",
+                ("done" if done else "open", time.time() if done else None, goal_id),
+            )
+            row = c.execute("SELECT * FROM project_goals WHERE id=?", (goal_id,)).fetchone()
+            return dict(row) if row else None
 
     # ---- frequent commands ----
     def bump_command(self, command: str) -> None:
@@ -233,6 +281,12 @@ class Memory:
             ):
                 hits.append(dict(row))
             for row in c.execute(
+                "SELECT 'goal' AS kind, project AS title, title AS body, created_at AS ts "
+                "FROM project_goals WHERE title LIKE ? OR project LIKE ? OR notes LIKE ? LIMIT ?",
+                (q, q, q, limit),
+            ):
+                hits.append(dict(row))
+            for row in c.execute(
                 "SELECT 'path' AS kind, label AS title, path AS body, 0 AS ts "
                 "FROM known_paths WHERE label LIKE ? OR path LIKE ? LIMIT ?",
                 (q, q, limit),
@@ -247,6 +301,7 @@ class Memory:
             "fix": ("past_fixes", "id"),
             "path": ("known_paths", "label"),
             "tool": ("installed_tools", "name"),
+            "goal": ("project_goals", "id"),
         }
         if kind not in tables:
             return False

@@ -100,6 +100,11 @@ async def websocket_endpoint(ws: WebSocket) -> None:
 
     async def run_brain(text: str, attachments: list | None = None) -> None:
         try:
+            # Phase 4: tell the frontend the unified voice state. The
+            # orchestrator sets THINKING itself; we mirror it on the wire
+            # (and IDLE when the turn + late events are done) so the orb
+            # and the backend never disagree about whose turn it is.
+            await safe_send({"type": "voice_state", "state": "thinking"})
             async for ev in orchestrator.handle_user_message(text, attachments=attachments):
                 await _emit_event(safe_send, ev, pending)
             # Phase 3: reflection / suggestions / compaction run
@@ -112,11 +117,13 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                     await _emit_event(safe_send, ev, pending)
             except asyncio.CancelledError:
                 pass
+            await safe_send({"type": "voice_state", "state": orchestrator.voice_state.value})
         except asyncio.CancelledError:
             # Best-effort notify — connection may already be dead. Do NOT
             # re-raise: callers (`await brain_task`) won't expect a
             # CancelledError to escape from a routine teardown.
             await safe_send({"type": "info", "text": "task cancelled"})
+            await safe_send({"type": "voice_state", "state": orchestrator.voice_state.value})
             await safe_send({"type": "done"})
         except Exception as e:  # noqa: BLE001
             log.exception("brain error")
@@ -162,7 +169,20 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                     await safe_send({"type": "error", "text": f"no such agent: {name}"})
 
             elif mtype == "cancel":
+                orchestrator.voice_state.cancel("ws cancel")
                 await cancel_running("user request")
+
+            elif mtype == "voice_state":
+                # Frontend reporting its side (tts started/ended, mic open).
+                state = msg.get("state", "")
+                if not orchestrator.voice_state.transition(state, msg.get("reason", "ws report")):
+                    await safe_send({"type": "voice_state", "state": orchestrator.voice_state.value})
+
+            elif mtype == "interrupt":
+                # Barge-in: user spoke over TTS / wants the floor.
+                if orchestrator.voice_state.barge_in("ws barge-in"):
+                    await cancel_running("barge-in")
+                await safe_send({"type": "voice_state", "state": orchestrator.voice_state.value})
 
             elif mtype == "command":
                 line = (msg.get("command") or "").strip()
@@ -393,5 +413,7 @@ async def _emit_event(send, ev: Event, pending: dict[str, asyncio.Future]) -> No
         await send({"type": "error", "text": ev.text})
     elif ev.kind is EventKind.INFO:
         await send({"type": "info", "text": ev.text})
+    elif ev.kind is EventKind.VOICE_STATE:
+        await send({"type": "voice_state", "state": ev.text or ev.payload.get("state", "idle")})
     elif ev.kind is EventKind.DONE:
         await send({"type": "done"})

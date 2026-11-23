@@ -13,6 +13,7 @@ The orchestrator does NOT see the difference — both paths return a list of
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -24,6 +25,24 @@ import httpx
 from ..config import Config
 
 log = logging.getLogger("jarvis.brain")
+
+# Phase 4 — error recovery: transient LLM failures (connection errors,
+# timeouts, HTTP 429 / 5xx) are retried with exponential backoff instead
+# of failing the turn on the first blip. Non-transient 4xx errors are
+# returned immediately. Tests monkeypatch LLM_RETRY_BASE_S to 0.
+LLM_MAX_ATTEMPTS = 3
+LLM_RETRY_BASE_S = 0.5
+
+
+def _is_transient_llm_error(exc: BaseException) -> bool:
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code if exc.response is not None else 0
+        return code == 429 or code >= 500
+    return isinstance(exc, (httpx.TransportError, httpx.TimeoutException))
+
+
+async def _retry_sleep(attempt: int) -> None:
+    await asyncio.sleep(LLM_RETRY_BASE_S * (2 ** attempt))
 
 
 TOOL_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
@@ -149,16 +168,28 @@ class LLMBrain:
                 {"type": "function", "function": s} for s in tool_schemas
             ]
 
-        try:
-            resp = await self._client.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            body = e.response.text[:500] if e.response else ""
-            log.error("LLM HTTP %s: %s — %s", e.response.status_code, e, body)
-            return BrainReply(text=f"[brain error] HTTP {e.response.status_code}: {body}", raw=str(e))
-        except httpx.HTTPError as e:
-            log.error("LLM HTTP error: %s", e)
-            return BrainReply(text=f"[brain error] {e}", raw=str(e))
+        resp = None
+        for attempt in range(LLM_MAX_ATTEMPTS):
+            try:
+                resp = await self._client.post(url, json=payload, headers=headers)
+                resp.raise_for_status()
+                break
+            except httpx.HTTPStatusError as e:
+                if _is_transient_llm_error(e) and attempt + 1 < LLM_MAX_ATTEMPTS:
+                    log.warning("LLM HTTP %s — retry %d/%d", e.response.status_code, attempt + 1, LLM_MAX_ATTEMPTS)
+                    await _retry_sleep(attempt)
+                    continue
+                body = e.response.text[:500] if e.response else ""
+                log.error("LLM HTTP %s: %s — %s", e.response.status_code, e, body)
+                return BrainReply(text=f"[brain error] HTTP {e.response.status_code}: {body}", raw=str(e))
+            except httpx.HTTPError as e:
+                if _is_transient_llm_error(e) and attempt + 1 < LLM_MAX_ATTEMPTS:
+                    log.warning("LLM %s — retry %d/%d", type(e).__name__, attempt + 1, LLM_MAX_ATTEMPTS)
+                    await _retry_sleep(attempt)
+                    continue
+                log.error("LLM HTTP error: %s", e)
+                return BrainReply(text=f"[brain error] {e}", raw=str(e))
+        assert resp is not None
 
         data = resp.json()
         choice = (data.get("choices") or [{}])[0]
@@ -193,6 +224,38 @@ class LLMBrain:
 
     # ------------------------------------------------------------------
     async def _chat_openai_compatible_stream(
+        self,
+        messages: list[dict[str, Any]],
+        tool_schemas: list[dict],
+        on_delta: Callable[[str], None] | None = None,
+    ) -> BrainReply:
+        """Retry wrapper: re-runs the stream only when it failed BEFORE
+        any token was delivered (a mid-stream failure keeps the partial
+        text — re-running would duplicate deltas already shown to the user).
+        """
+        for attempt in range(LLM_MAX_ATTEMPTS):
+            delivered = 0
+
+            def _counting(piece: str) -> None:
+                nonlocal delivered
+                if piece:
+                    delivered += 1
+                if on_delta:
+                    on_delta(piece)
+
+            reply = await self._chat_openai_compatible_stream_once(
+                messages, tool_schemas, on_delta=_counting if on_delta else None
+            )
+            if not reply.text.startswith("[brain error]") or delivered:
+                return reply
+            if attempt + 1 >= LLM_MAX_ATTEMPTS:
+                return reply
+            log.warning("LLM stream failed before first token — retry %d/%d",
+                        attempt + 1, LLM_MAX_ATTEMPTS)
+            await _retry_sleep(attempt)
+        return reply  # pragma: no cover - loop always returns above
+
+    async def _chat_openai_compatible_stream_once(
         self,
         messages: list[dict[str, Any]],
         tool_schemas: list[dict],
@@ -355,12 +418,20 @@ class LLMBrain:
                 for s in tool_schemas
             ]
 
-        try:
-            resp = await self._client.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
-        except httpx.HTTPError as e:
-            log.error("Anthropic HTTP error: %s", e)
-            return BrainReply(text=f"[brain error] {e}", raw=str(e))
+        resp = None
+        for attempt in range(LLM_MAX_ATTEMPTS):
+            try:
+                resp = await self._client.post(url, json=payload, headers=headers)
+                resp.raise_for_status()
+                break
+            except httpx.HTTPError as e:
+                if _is_transient_llm_error(e) and attempt + 1 < LLM_MAX_ATTEMPTS:
+                    log.warning("Anthropic %s — retry %d/%d", type(e).__name__, attempt + 1, LLM_MAX_ATTEMPTS)
+                    await _retry_sleep(attempt)
+                    continue
+                log.error("Anthropic HTTP error: %s", e)
+                return BrainReply(text=f"[brain error] {e}", raw=str(e))
+        assert resp is not None
 
         data = resp.json()
         text_parts: list[str] = []

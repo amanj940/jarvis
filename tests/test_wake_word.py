@@ -43,7 +43,10 @@ class WakeWordTests(unittest.TestCase):
         for phrase, expected in [(" Hey   Friday ", "Hey Friday"), ("贾维斯", "贾维斯"), ("Assistant+", "Assistant+")]:
             with self.subTest(phrase=phrase):
                 result = self.health_from_yaml(f'voice:\n  wake_word: "{phrase}"\n')
-                self.assertEqual(result["voice"], {"wake_word": expected})
+                # Phase 4: /api/health voice now also reports stt_language,
+                # state and Whisper/Piper availability — assert the wake word
+                # itself, not exact dict equality.
+                self.assertEqual(result["voice"]["wake_word"], expected)
 
     def test_blank_and_non_string_phrases_are_rejected(self):
         for phrase in ["", " \t\n ", None, 42]:

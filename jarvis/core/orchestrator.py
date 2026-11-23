@@ -20,6 +20,7 @@ from ..plugins.registry import PluginRegistry
 from .brain import BrainReply, LLMBrain, ToolCall
 from .events import Event, EventKind
 from .task_progress import set_reporter
+from .voice_state import VoiceStateMachine
 from .hooks import HookRegistry
 from .intent_router import IntentMatch, classify as classify_intent, classify_multi
 from .logger import ActionLog
@@ -145,6 +146,9 @@ class Orchestrator:
         # in-flight task. Heavy tools (image_generate, image_to_3d,
         # text_to_3d) protect their work via UNINTERRUPTIBLE_TOOLS below.
         self.busy_tool: str | None = None
+        # Phase 4: single voice state machine shared with the WS layer
+        # and the /api/voice/* routes (see core/voice_state.py).
+        self.voice_state = VoiceStateMachine()
 
         # Default emit-hook: lift tool results carrying a __JARVIS_MEDIA__
         # JSON payload into a proper MEDIA event. This is what makes
@@ -575,6 +579,24 @@ class Orchestrator:
         user_text: str,
         attachments: list[dict] | None = None,
     ) -> AsyncIterator[Event]:
+        """Phase 4 wrapper: the turn runs in THINKING and returns to IDLE
+        when the generator finishes or is cancelled, so the backend voice
+        state always agrees with what the frontend shows. Speaking is set
+        by the /api/tts route / frontend voice-state reports (the backend
+        cannot know when browser audio playback ends on its own).
+        """
+        self.voice_state.begin_thinking("user turn")
+        try:
+            async for ev in self._handle_user_message_impl(user_text, attachments):
+                yield ev
+        finally:
+            self.voice_state.to_idle("turn done")
+
+    async def _handle_user_message_impl(
+        self,
+        user_text: str,
+        attachments: list[dict] | None = None,
+    ) -> AsyncIterator[Event]:
         # A new turn supersedes the previous turn's unfinished follow-ups
         # (suggestions / self-check / compaction notice that never landed).
         self._cancel_late_tasks()
@@ -903,6 +925,9 @@ class Orchestrator:
     async def _invoke_tool(self, tc: ToolCall) -> AsyncIterator[Event]:
         tool: Tool | None = self.registry.get(tc.name)
         if tool is None:
+            # Phase 4: unknown tools are auditable failures, not silent.
+            self.actions.record("failed", tool=tc.name, args=tc.args, ok=False,
+                                error=f"unknown tool: {tc.name}")
             yield Event(
                 EventKind.TOOL_RESULT,
                 text=f"unknown tool: {tc.name}",
@@ -926,6 +951,8 @@ class Orchestrator:
                 f"{self._active_mode.name} mode"
             )
             log.info("tool '%s' blocked by active mode '%s'", tool.name, self._active_mode.name)
+            self.actions.record("denied", tool=tool.name, args=tc.args, ok=False,
+                                error=denial, preview=preview)
             yield Event(
                 EventKind.TOOL_RESULT,
                 text=denial,

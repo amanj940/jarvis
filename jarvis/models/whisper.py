@@ -35,6 +35,11 @@ _HALLUCINATION_RE = re.compile(
       (?:everyone|guys|all)?[\s,.!?]*
     | thank\s+you[\s,.!?]*(?:for\s+watching|for\s+listening|so\s+much)?[\s,.!?]*
     | (?:please\s+)?(?:like\s*(?:and\s+)?)?subscribe[\s,.!?]*(?:to\s+my\s+channel)?[\s,.!?]*
+    | شكرا(?:\s+لكم)?[\s,.!?]*(?:على\s+المشاهدة|للمشاهدة|على\s+الاستماع)?[\s,.!?]*
+    | اشترك(?:وا)?[\s,.!?]*(?:في\s+القناة)?[\s,.!?]*
+    | مع\s+السلامة[\s,.!?]*
+    | إلى\s+اللقاء[\s,.!?]*
+    | وداعا[\s,.!?]*
     | bye(?:\s*bye)?[\s,.!?]*
     | goodbye[\s,.!?]*
     | (?:see|catch)\s+you\s+(?:later|next\s+time)[\s,.!?]*
@@ -206,3 +211,50 @@ get_whisper_model = _get_whisper_model
 switch_whisper_to_cpu = _switch_whisper_to_cpu
 filter_whisper_hallucination = _filter_whisper_hallucination
 whisper_lock = _whisper_lock
+
+
+# ── Phase 4: configurable STT language + localisable initial prompt ──────
+STT_INITIAL_PROMPT_EN = (
+    "JARVIS command. Search, generate image, open page, run code, "
+    "show news, list videos, open the file."
+)
+STT_INITIAL_PROMPT_AR = (
+    "أمر جارفيس. ابحث، أنشئ صورة، افتح صفحة، نفّذ كود، اعرض الأخبار، "
+    "اعرض الفيديوهات، افتح الملف."
+)
+
+
+def get_stt_language(cfg=None) -> str:
+    """Configured STT language (Phase 4 default: "ar")."""
+    if cfg is not None:
+        return getattr(getattr(cfg, "voice", None), "stt_language", None) or "ar"
+    return "ar"
+
+
+def build_transcribe_kwargs(cfg=None, language: str | None = None,
+                            initial_prompt: str | None = None) -> dict:
+    """Whisper transcribe kwargs for the /stt route.
+
+    Language precedence: explicit ``language`` argument (per-request
+    ``?language=`` override) > ``voice.stt_language`` in config >
+    ``"ar"``. The initial prompt follows the resolved language unless an
+    explicit prompt (or ``voice.stt_initial_prompt``) is given.
+    """
+    lang = (language or get_stt_language(cfg) or "ar").strip() or "ar"
+    prompt = initial_prompt
+    if prompt is None and cfg is not None:
+        prompt = getattr(getattr(cfg, "voice", None), "stt_initial_prompt", None)
+    if prompt is None:
+        prompt = STT_INITIAL_PROMPT_AR if lang.lower().startswith("ar") else STT_INITIAL_PROMPT_EN
+    return dict(
+        language=None if lang.lower() == "auto" else lang,
+        beam_size=1,
+        vad_filter=True,
+        vad_parameters={"min_silence_duration_ms": 400, "threshold": 0.45},
+        condition_on_previous_text=False,
+        no_speech_threshold=0.7,
+        log_prob_threshold=-1.0,
+        compression_ratio_threshold=2.4,
+        temperature=0.0,
+        initial_prompt=prompt,
+    )

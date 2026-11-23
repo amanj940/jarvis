@@ -10,6 +10,8 @@ A:
   name: JARVIS
   # Persona lives in persona/jarvis.md (single source of truth).
   # An inline `persona:` here still works and takes precedence.
+  # Arabic persona: persona/jarvis-ar.md — set persona_file to it to run
+  # JARVIS in Arabic (Phase 4). The English file stays the default.
   persona_file: persona/jarvis.md
 
 model:
@@ -65,6 +67,15 @@ ui:
 voice:
   # Phrase that wakes the microphone (restart backend after changing).
   wake_word: "Hey JARVIS"
+  # Phase 4: STT language — the user speaks Arabic, so Whisper defaults
+  # to "ar". Set to "en" for English, "auto" for detection, or override
+  # per-request with ?language=en on POST /api/stt.
+  stt_language: "ar"
+  # stt_initial_prompt: null  # override the language default prompt in
+  #                           # jarvis/models/whisper.py (Arabic/English)
+  # Persona: A.persona_file below selects the persona language. The
+  # English persona (persona/jarvis.md) stays the default; to run JARVIS
+  # in Arabic, set A.persona_file: persona/jarvis-ar.md (see docs/phase4-assistant.md).
   # JARVIS TTS preference order (auto = first that initialises):
   #   1. piper   — community Paul-Bettany-style model (jgkawell/jarvis).
   #                Closest to the real JARVIS voice. Local, free, fan-use only.

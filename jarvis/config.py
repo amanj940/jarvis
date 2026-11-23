@@ -175,6 +175,15 @@ class VoiceConfig(BaseModel):
     # (or JARVIS_PRELOAD_MODELS=1) to restore the old background preload
     # for instant first STT/TTS at the cost of slower startup + VRAM held
     # from boot.
+    # Phase 4: STT language. The user speaks Arabic, so the default is
+    # "ar" — Whisper transcribes Arabic and the initial prompt biases it
+    # toward assistant vocabulary in that language. Set to "en" (or pass
+    # ?language=en to /api/stt) for English. "auto" lets Whisper detect.
+    stt_language: str = "ar"
+    # Override the Whisper initial_prompt. None → language-appropriate
+    # default from jarvis/models/whisper.py (Arabic when stt_language
+    # starts with "ar", English otherwise).
+    stt_initial_prompt: str | None = None
     preload_models: bool = False
     provider: str = "auto"  # auto | piper | edge_tts | nvidia_riva
     edge_voice: str = "en-GB-ThomasNeural"
