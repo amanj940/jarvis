@@ -41,7 +41,7 @@ _HF_BASE     = "black-forest-labs/FLUX.2-klein-4B"   # VAE / text-encoders / sch
 # model_cpu_offload: only the active module sits on GPU (encode → denoise → decode),
 # peak VRAM ~8 GB, no spill, full GPU speed. Per-gen cost: one ~1-2 s text-encoder
 # swap, vs 100× slowdown from spilling.
-_FLUX_IDLE_UNLOAD_S: float = 0.0    # 0 = never unload (stays resident → every gen instant); finite = free VRAM after N s idle
+_FLUX_IDLE_UNLOAD_S: float = 120.0    # Phase 3: free VRAM 120 s after the last gen (was 0 = never unload, pipeline held ~6-10 GB forever). Set 0 to keep resident.
 _FLUX_USE_CPU_OFFLOAD = True        # REQUIRED: 8 GB text encoder over-commits 16 GB if fully resident → driver sysmem spill
 _FLUX_PRELOAD_AT_STARTUP = False    # load on first image request, not at boot
 

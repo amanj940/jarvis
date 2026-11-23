@@ -1,0 +1,23 @@
+# GPU media — local AI image generation (FLUX.2-klein-4B GGUF) and local
+# 3D generation (Hunyuan3D-2GP Mini Turbo). First use can download ~8 GB.
+# Needs an NVIDIA GPU + CUDA torch build. Install with:
+#   pip install -r requirements-gpu-media.txt
+# NOTE: numpy is NOT listed anywhere — it arrives transitively with torch,
+# and Phase 3 removed the last hard numpy dependency (semantic memory now
+# uses sqlite-vec or a pure-Python index).
+torch>=2.4.0
+diffusers>=0.38.0
+transformers>=4.44.0
+accelerate>=0.34.0
+sentencepiece>=0.2.0
+safetensors>=0.4.4
+huggingface-hub>=0.24.0
+gguf>=0.10.0
+einops>=0.8.0
+omegaconf>=2.3.0
+pymeshlab>=2025.7
+mmgp==3.2.7
+rembg>=2.0.67
+onnxruntime>=1.18.0
+# Optional speed path for DMC mesh extraction if a compatible wheel/build exists:
+#   pip install diso

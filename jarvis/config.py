@@ -146,6 +146,11 @@ class UltimateConfig(BaseModel):
     compaction_keep_recent: int = 12
     autonomous_planning: bool = True
     plan_min_chars: int = 60          # only plan for non-trivial requests
+    # Phase 3: when True, planning ALSO requires a multi-step / goal-shaped
+    # request (sequencing words, multiple clauses, goal verbs) — a long
+    # single question no longer spends an extra LLM call on a plan.
+    # False restores the old length-only heuristic.
+    plan_require_complexity: bool = True
 
     # — Intuitive —
     proactive_suggestions: bool = True
@@ -165,6 +170,12 @@ class VoiceConfig(BaseModel):
             raise ValueError("wake_word must not be blank")
         return value
 
+    # Phase 3: voice models (Whisper STT, Piper TTS) load LAZILY on first
+    # use by default — no multi-GB model load at server startup. Set True
+    # (or JARVIS_PRELOAD_MODELS=1) to restore the old background preload
+    # for instant first STT/TTS at the cost of slower startup + VRAM held
+    # from boot.
+    preload_models: bool = False
     provider: str = "auto"  # auto | piper | edge_tts | nvidia_riva
     edge_voice: str = "en-GB-ThomasNeural"
     edge_rate: str = "-6%"

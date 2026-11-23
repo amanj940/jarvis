@@ -71,6 +71,10 @@ voice:
   #                Set piper_enabled: true + install piper-tts to activate.
   #   2. nvidia  — NVIDIA Riva cloud (needs NVIDIA_API_KEY).
   #   3. edge    — Microsoft en-GB-RyanNeural (cinematic British male).
+  # Phase 3: voice models load lazily on first use by default (fast
+  # startup, no VRAM held from boot). Set preload_models: true — or
+  # JARVIS_PRELOAD_MODELS=1 — to pre-warm Whisper + Piper at startup.
+  preload_models: false
   provider: auto
   edge_voice: en-GB-ThomasNeural    # deeper, more cinematic British male — naturally Bettany-like
   edge_rate: "-6%"                  # slight slow-down for gravitas, not so heavy it muddies
@@ -186,6 +190,10 @@ ultimate:
   # — Intelligence: autonomous plan → execute → reflect loop —
   autonomous_planning: true
   plan_min_chars: 60
+  # Phase 3: planning also requires a genuinely multi-step / goal-shaped
+  # request, not just a long message (see jarvis/core/orchestrator.py
+  # _looks_complex). False restores the old length-only heuristic.
+  plan_require_complexity: true
 
   # — Intuitive: proactive next-step suggestions —
   proactive_suggestions: true

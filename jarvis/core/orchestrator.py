@@ -56,6 +56,45 @@ PROMISE_RE = re.compile(
 PROMISE_FOLLOWUP_LIMIT = 1   # at most one auto-nudge per user turn
 
 
+# Phase 3 — planning gate: words that mark a request as genuinely
+# multi-step / goal-shaped (sequencing, goal verbs, iteration). A long
+# message WITHOUT these is one question, not a project — it must not spend
+# an extra LLM call on a plan.
+_COMPLEXITY_RE = re.compile(
+    r"\b(?:"
+    r"then|after\s+that|next\s+step|finally|afterwards|"
+    r"step\s*\d+|first\b[^.]{0,60}?\bthen\b|"
+    r"research|investigate|compare|analy[sz]e|build|create|set\s+up|"
+    r"organise|organize|automate|plan\b|figure\s+out|work\s+out|"
+    r"for\s+each|one\s+by\s+one|day[\s-]?by[\s-]?day"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_complex(text: str) -> bool:
+    """True when a request looks multi-step / goal-shaped, not just long."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    # Numbered / bulleted multi-item list ("1: … 2: …" / "1. … 2. …").
+    items = re.findall(r"(?m)^\s*(?:\d+[.:)]|[-*•])\s+\S", t)
+    if len(items) >= 2:
+        return True
+    if _COMPLEXITY_RE.search(t):
+        return True
+    # Several distinct clauses / sentences = several asks in one message.
+    clauses = [c.strip() for c in re.split(r"[;\n]+", t) if c.strip()]
+    if len(clauses) >= 3:
+        return True
+    if len(clauses) == 2 and re.search(r"\b(?:and|then)\b", clauses[1], re.IGNORECASE):
+        return True
+    sentences = [s.strip() for s in re.split(r"[.!?]+\s+", t) if s.strip()]
+    if len(sentences) >= 3:
+        return True
+    return False
+
+
 # Tools whose work is too expensive to throw away when a new chat arrives.
 # The WS layer holds new chats until these finish instead of cancelling.
 UNINTERRUPTIBLE_TOOLS = frozenset({
@@ -93,6 +132,14 @@ class Orchestrator:
         self._current_plan: str = ""
         self._history: list[dict] = []
         self._active_mode: Mode | None = None
+        # Phase 3 — late (fire-and-forget) follow-ups: reflection,
+        # suggestions and compaction run AFTER the reply is sent and never
+        # delay DONE. Tasks are tracked so a new turn can cancel the
+        # previous turn's stragglers; finished tasks drop their events into
+        # _late_queue, drained by ws.py after the main generator ends.
+        self._late_queue: asyncio.Queue | None = None
+        self._late_tasks: set[asyncio.Task] = set()
+        self._compacting = False
         # Name of the tool currently running, or None when idle. Used by the
         # WS layer to decide whether a new chat message should cancel the
         # in-flight task. Heavy tools (image_generate, image_to_3d,
@@ -256,14 +303,22 @@ class Orchestrator:
         return clean_assistant_text(reply.text)
 
     async def _maybe_plan(self, user_text: str) -> str:
-        """For a sufficiently complex request, draft a short execution plan
+        """For a genuinely complex request, draft a short execution plan
         before touching tools. Returns the plan text (anchored into the system
         prompt for this turn) or "" when planning is off / the task is trivial.
-        Best-effort: any failure returns "" and execution proceeds unplanned."""
+        Best-effort: any failure returns "" and execution proceeds unplanned.
+
+        Phase 3: length alone no longer triggers planning — a long single
+        question ("what is X, and tell me about its history in detail…")
+        costs a whole extra LLM call for a plan nobody needs. Planning now
+        also requires multi-step / goal-shaped language (see
+        _looks_complex), unless ultimate.plan_require_complexity is off."""
         u = getattr(self.cfg, "ultimate", None)
         if u is None or not u.enabled or not u.autonomous_planning:
             return ""
         if len((user_text or "").strip()) < max(20, u.plan_min_chars):
+            return ""
+        if getattr(u, "plan_require_complexity", True) and not _looks_complex(user_text):
             return ""
         prompt = [
             {
@@ -369,6 +424,118 @@ class Orchestrator:
                 out.append(s)
         return out[:3]
 
+    # ── Phase 3: late (fire-and-forget) follow-ups ──────────────────────
+    # Reflection, suggestions and compaction used to run inline before
+    # DONE — up to 3 extra LLM calls delaying the visible reply. They now
+    # run as background tasks AFTER the reply is sent; their events land in
+    # _late_queue and ws.py drains them once the main generator ends.
+    # Behaviour notes:
+    #   * Suggestions still arrive as SUGGESTIONS chips, just ~1 LLM call
+    #     later than DONE instead of before it.
+    #   * Reflection no longer continues the turn when a planned step is
+    #     missing (that would delay the reply again). Instead the next
+    #     action surfaces as a late INFO event the user can act on.
+    #   * Compaction (and its _summarize call) runs in the background too —
+    #     _summarize was already only reachable via _maybe_compact_history;
+    #     there is no separate sixth call on the response path anymore.
+    def _late_event_queue(self) -> asyncio.Queue:
+        if self._late_queue is None:
+            self._late_queue = asyncio.Queue()
+        return self._late_queue
+
+    def _schedule_late(self, coro, label: str) -> None:
+        task = asyncio.create_task(coro)
+        self._late_tasks.add(task)
+
+        def _done(t: asyncio.Task, label: str = label) -> None:
+            self._late_tasks.discard(t)
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is not None:
+                log.warning("late task '%s' failed: %s", label, exc)
+
+        task.add_done_callback(_done)
+
+    def _cancel_late_tasks(self) -> None:
+        """Drop the previous turn's unfinished follow-ups (user moved on)."""
+        for t in list(self._late_tasks):
+            t.cancel()
+        self._late_tasks.clear()
+        if self._late_queue is not None:
+            while not self._late_queue.empty():
+                try:
+                    self._late_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+
+    async def _suggest_late(self, user_text: str, final_text: str) -> None:
+        chips = await self._suggest(user_text, final_text)
+        if chips:
+            self._late_event_queue().put_nowait(
+                Event(EventKind.SUGGESTIONS, payload={"items": chips})
+            )
+
+    async def _reflect_late(self, user_text: str, final_text: str) -> None:
+        if not self._current_plan:
+            return
+        next_action = await self._reflect(user_text, final_text)
+        if next_action:
+            self._late_event_queue().put_nowait(Event(
+                EventKind.INFO,
+                text=f"Self-check: plan not fully complete — next step: {next_action}",
+            ))
+
+    async def _compact_late(self) -> None:
+        if self._compacting:
+            return
+        self._compacting = True
+        try:
+            folded = await self._maybe_compact_history()
+            if folded:
+                self._late_event_queue().put_nowait(Event(
+                    EventKind.INFO,
+                    text=f"compacted {folded} older messages into memory",
+                ))
+        finally:
+            self._compacting = False
+
+    async def drain_late_events(self, timeout_s: float = 90.0) -> AsyncIterator[Event]:
+        """Yield late follow-up events as background tasks finish. Returns
+        when no late task is running and the queue is empty, or on timeout.
+        Called by ws.py AFTER the main generator yields DONE, so follow-ups
+        never delay the reply itself."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_s
+        while True:
+            # Drop finished tasks synchronously — their done-callbacks can
+            # lag a tick behind, and polling on the stale set would stall
+            # the drain for a whole wait slice after the work is done.
+            self._late_tasks = {t for t in self._late_tasks if not t.done()}
+            while self._late_queue is not None and not self._late_queue.empty():
+                yield self._late_queue.get_nowait()
+            if not self._late_tasks:
+                return
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return
+            # Wait for the next queued event OR a late task finishing.
+            get_task = asyncio.ensure_future(self._late_event_queue().get())
+            done, _ = await asyncio.wait(
+                {get_task, *self._late_tasks},
+                timeout=min(remaining, 5.0),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if get_task in done:
+                yield get_task.result()
+            else:
+                if not get_task.done():
+                    get_task.cancel()
+                    try:
+                        await get_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+
     async def _auto_remember(self, user_text: str) -> None:
         if not self._ultimate_on("semantic_memory") or not self.cfg.ultimate.auto_remember:
             return
@@ -384,6 +551,7 @@ class Orchestrator:
             log.exception("auto-remember failed")
 
     def reset(self) -> None:
+        self._cancel_late_tasks()
         self._history.clear()
 
     def set_mode(self, mode: Mode | None) -> None:
@@ -407,6 +575,9 @@ class Orchestrator:
         user_text: str,
         attachments: list[dict] | None = None,
     ) -> AsyncIterator[Event]:
+        # A new turn supersedes the previous turn's unfinished follow-ups
+        # (suggestions / self-check / compaction notice that never landed).
+        self._cancel_late_tasks()
         self.memory.append_message("user", user_text)
         user_msg: dict = {"role": "user", "content": user_text}
         if attachments:
@@ -467,14 +638,11 @@ class Orchestrator:
                 yield ev
             return
 
-        # Fold older turns into a rolling summary once history grows long, so
-        # deep sessions don't blow the context window. Gated + best-effort.
-        folded = await self._maybe_compact_history()
-        if folded:
-            yield Event(
-                EventKind.INFO,
-                text=f"compacted {folded} older messages into memory",
-            )
+        # Fold older turns into a rolling summary once history grows long.
+        # Phase 3: compaction (including its _summarize LLM call) runs in
+        # the background — it only feeds FUTURE turns' prompts, so it must
+        # not delay this turn's reply. The notice arrives as a late event.
+        self._schedule_late(self._compact_late(), "compact")
 
         # Recall relevant long-term memory for the reasoning path only — the
         # immediate/intent paths above never touch the LLM prompt.
@@ -493,7 +661,6 @@ class Orchestrator:
 
         hop = 0
         promise_followups = 0
-        reflections = 0
         while hop < MAX_TOOL_HOPS:
             hop += 1
             yield Event(EventKind.THINKING, text="thinking...")
@@ -613,29 +780,13 @@ class Orchestrator:
                 self.memory.append_message("assistant", assistant_text)
                 yield Event(EventKind.ASSISTANT, text=assistant_text)
 
-                # Self-reflection: for a planned task, verify completion ONCE.
-                # If a concrete step still remains, inject it and keep going;
-                # otherwise close the turn. Capped so it can never spin.
-                if self._current_plan and reflections < 1:
-                    reflections += 1
-                    next_action = await self._reflect(user_text, assistant_text)
-                    if next_action:
-                        yield Event(EventKind.INFO, text="verifying plan completion")
-                        self._history.append({
-                            "role": "user",
-                            "content": (
-                                "(internal protocol — not from the user) "
-                                "Self-check on your own plan: the task is not yet "
-                                f"complete. Next concrete action: {next_action} "
-                                "Execute it now by calling the appropriate tool. "
-                                "Do not reply with words alone."
-                            ),
-                        })
-                        continue  # next hop
-
-                chips = await self._suggest(user_text, assistant_text)
-                if chips:
-                    yield Event(EventKind.SUGGESTIONS, payload={"items": chips})
+                # Phase 3: reflection + suggestions are fire-and-forget —
+                # they run AFTER the reply is sent and must never delay
+                # DONE. Suggestions still arrive as SUGGESTIONS chips and a
+                # missed plan step as an INFO event, via drain_late_events().
+                if self._current_plan:
+                    self._schedule_late(self._reflect_late(user_text, assistant_text), "reflect")
+                self._schedule_late(self._suggest_late(user_text, assistant_text), "suggest")
                 yield Event(EventKind.DONE)
                 return
 

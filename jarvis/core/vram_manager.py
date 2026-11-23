@@ -168,7 +168,13 @@ async def gpu_exclusive_async(resource: GPUResource):
     class _AsyncCtx:
         async def __aenter__(self_):
             await lock.acquire()
-            _evict_others(resource)
+            # Eviction runs in an executor, NOT on the event loop: an evict
+            # callback (e.g. Whisper's) takes its model's lock, which an
+            # in-flight STT transcription may be holding in a worker
+            # thread. Running it inline would stall the whole loop until
+            # that transcription finishes.
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, _evict_others, resource)
             global _current_owner
             _current_owner = resource
             return self_

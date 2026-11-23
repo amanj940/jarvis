@@ -1,0 +1,17 @@
+# JARVIS core — the server, chat loop, memory, tools. Everything needed to
+# run JARVIS without voice, GPU media, vision or browser automation.
+# Install everything with:  pip install -r requirements.txt
+# Or just this group with:  pip install -r requirements-core.txt
+fastapi>=0.110.0
+python-multipart>=0.0.9              # /stt route uses UploadFile=File(...); FastAPI imports fail without it
+uvicorn[standard]>=0.27.0
+websockets>=12.0
+httpx>=0.25.0
+trafilatura>=2.0.0                # in-app news reader content extraction
+pydantic>=2.5.0
+pyyaml>=6.0.1
+psutil>=5.9.0
+python-dotenv>=1.0.0
+rich>=13.7.0
+sqlite-vec>=0.1.9                 # vector index for semantic memory (Phase 3); falls back to a pure-Python index if missing
+nvidia-ml-py>=12.0.0              # GPU stats; falls back to nvidia-smi if missing

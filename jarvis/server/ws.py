@@ -102,6 +102,16 @@ async def websocket_endpoint(ws: WebSocket) -> None:
         try:
             async for ev in orchestrator.handle_user_message(text, attachments=attachments):
                 await _emit_event(safe_send, ev, pending)
+            # Phase 3: reflection / suggestions / compaction run
+            # fire-and-forget AFTER the reply + DONE, so they never delay
+            # the visible response. Drain them here — run_brain is a
+            # background task, so the receive loop stays hot while we wait.
+            # A cancel mid-drain (new chat) just drops the stragglers.
+            try:
+                async for ev in orchestrator.drain_late_events():
+                    await _emit_event(safe_send, ev, pending)
+            except asyncio.CancelledError:
+                pass
         except asyncio.CancelledError:
             # Best-effort notify — connection may already be dead. Do NOT
             # re-raise: callers (`await brain_task`) won't expect a

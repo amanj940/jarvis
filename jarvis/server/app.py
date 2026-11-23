@@ -79,7 +79,13 @@ def create_app(
         log.info("server up — model=%s tools=%d agents=%d",
                  cfg.model.model, len(registry.all_tools()), len(agents.list()))
 
-        # ── Preload models in background so first request is instant. ──
+        # ── Optional model preload (Phase 3: OFF by default) ──
+        # Whisper (~1.5 GB) + Piper load LAZILY on first STT/TTS use —
+        # the model caches in jarvis/models/whisper.py and tts.py already
+        # keep them resident after that first load. Preloading only buys
+        # a faster FIRST request, at the cost of slow startup + VRAM held
+        # from boot. Re-enable explicitly with voice.preload_models: true
+        # in config.yaml or JARVIS_PRELOAD_MODELS=1 in the environment.
         # ORDER MATTERS for GPU memory: FLUX (~6–10 GB peak with text
         # encoders) loads FIRST so it gets a clean allocator. Whisper-turbo
         # (~1.5 GB) loads after — much less likely to OOM on a 16 GB card.
@@ -113,15 +119,28 @@ def create_app(
                 log.warning("Edge-TTS unavailable: %s", e)
             log.info("model preload complete.")
 
-        preload_task = asyncio.create_task(_preload())
+        import os as _os
+        _preload_enabled = bool(
+            getattr(cfg.voice, "preload_models", False)
+            or _os.getenv("JARVIS_PRELOAD_MODELS", "") == "1"
+        )
+        if not _preload_enabled:
+            log.info(
+                "model preload disabled — Whisper/Piper load lazily on first "
+                "use (voice.preload_models / JARVIS_PRELOAD_MODELS=1 to re-enable)"
+            )
+            preload_task = None
+        else:
+            preload_task = asyncio.create_task(_preload())
 
         yield
 
-        preload_task.cancel()
-        try:
-            await preload_task
-        except (asyncio.CancelledError, Exception):
-            pass
+        if preload_task is not None:
+            preload_task.cancel()
+            try:
+                await preload_task
+            except (asyncio.CancelledError, Exception):
+                pass
         await orchestrator.brain.aclose()
 
     app = FastAPI(title="JARVIS", version="0.2.0", lifespan=lifespan)

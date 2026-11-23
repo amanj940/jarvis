@@ -11,10 +11,13 @@ Providers:
 """
 from __future__ import annotations
 
+import asyncio
 import html
 import json
+import logging
 import os
 import re
+import time
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 from urllib.parse import quote, urlparse
@@ -25,6 +28,91 @@ from ..core.permissions import Permission
 from .base import PluginInfo, tool
 
 MEDIA_PREFIX = "__JARVIS_MEDIA__"
+
+log = logging.getLogger("jarvis.web_tools")
+
+
+# ── Phase 3: shared HTTP client + short-TTL result cache ──────────────────
+# One httpx.AsyncClient per process (connection reuse, no per-call client
+# churn — the old code built a fresh client, with fresh TLS + connection
+# pool, on EVERY search/fetch) and a 10-minute in-memory cache for the two
+# repeat-prone tools, web_search and web_fetch. Only SUCCESSFUL results are
+# cached: failures / soft errors are never stored, so a transient block
+# doesn't poison the cache for 10 minutes.
+_WEB_CACHE_TTL_S = 600.0
+_WEB_CACHE_MAX_ENTRIES = 128
+_web_cache: dict[tuple, tuple[float, str]] = {}
+_shared_client: httpx.AsyncClient | None = None
+_shared_client_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    """Process-wide shared client. Recreated if the event loop changed
+    (httpx transports bind to the loop that first uses them, so a client
+    built under a dead loop raises on its next request)."""
+    global _shared_client, _shared_client_loop
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if _shared_client is None or (loop is not None and _shared_client_loop is not loop):
+        # The orphaned client belongs to a dead loop; just drop it (its
+        # connections die with the loop — nothing to close cleanly here).
+        try:
+            _shared_client = httpx.AsyncClient(
+                timeout=30,
+                follow_redirects=True,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+        except Exception as e:  # noqa: BLE001
+            # Some environments export proxy vars httpx cannot parse (this
+            # sandbox's NO_PROXY contains a bare ::1, which httpx 0.28 turns
+            # into an invalid `all://[::1]` proxy URL and raises InvalidURL
+            # at construction). Fall back to ignoring the environment's
+            # proxy config rather than failing every web request.
+            log.warning("shared HTTP client: ignoring unparsable proxy env (%s)", e)
+            _shared_client = httpx.AsyncClient(
+                timeout=30,
+                follow_redirects=True,
+                headers={"User-Agent": "Mozilla/5.0"},
+                trust_env=False,
+            )
+        _shared_client_loop = loop
+    return _shared_client
+
+
+async def aclose_shared_client() -> None:
+    """Close the shared client (server shutdown / tests)."""
+    global _shared_client, _shared_client_loop
+    if _shared_client is not None:
+        try:
+            await _shared_client.aclose()
+        finally:
+            _shared_client = None
+            _shared_client_loop = None
+
+
+def _cache_get(key: tuple) -> str | None:
+    entry = _web_cache.get(key)
+    if entry is None:
+        return None
+    expires, value = entry
+    if time.monotonic() > expires:
+        del _web_cache[key]
+        return None
+    return value
+
+
+def _cache_put(key: tuple, value: str) -> None:
+    if len(_web_cache) >= _WEB_CACHE_MAX_ENTRIES:
+        # Evict the oldest entry (dicts preserve insertion order).
+        _web_cache.pop(next(iter(_web_cache)))
+    _web_cache[key] = (time.monotonic() + _WEB_CACHE_TTL_S, value)
+
+
+def clear_web_cache() -> None:
+    """Test / admin hook — drop all cached web results."""
+    _web_cache.clear()
 
 
 def _media(kind: str, items: list[dict], summary: str = "") -> str:
@@ -61,6 +149,12 @@ def register(registry):
         # Route news-y queries into a dedicated news kind so the UI can
         # surface them in their own NEWS panel separate from generic web
         # results. Falls back to plain web search if Google News empty.
+        # Phase 3: successful results are cached 10 min (same query asked
+        # twice — e.g. by the model re-checking — costs no second fetch).
+        cache_key = ("web_search", provider, query, max_results)
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached
         is_news = _is_news_query(query)
         try:
             items: list[dict] = []
@@ -79,7 +173,9 @@ def register(registry):
             text_lines.append(f"{i}. {r.get('title','(no title)')} — {r.get('url','')}")
             if r.get("snippet"):
                 text_lines.append(f"   {r['snippet']}")
-        return _media("news" if is_news else "search", items, "\n".join(text_lines))
+        result = _media("news" if is_news else "search", items, "\n".join(text_lines))
+        _cache_put(cache_key, result)
+        return result
 
     @tool(
         name="image_search",
@@ -241,6 +337,11 @@ def register(registry):
         # Don't raise on 4xx/5xx — return a soft error string so multi-fetch
         # callers (deep research) continue with the next URL instead of
         # bombing the whole tool chain.
+        # Phase 3: successful fetches are cached 10 min on (url, max_chars).
+        cache_key = ("web_fetch", url, max_chars)
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached
         headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -257,12 +358,15 @@ def register(registry):
             "Upgrade-Insecure-Requests": "1",
         }
         try:
-            async with httpx.AsyncClient(timeout=30, follow_redirects=True, headers=headers) as c:
-                r = await c.get(url)
+            r = await _get_client().get(url, timeout=30, headers=headers)
             if r.status_code >= 400:
                 return f"[web_fetch: HTTP {r.status_code} for {url} — site blocked the fetch]"
             text = _html_to_text(r.text)
-            return text[:max_chars] if text else f"[web_fetch: empty body for {url}]"
+            if not text:
+                return f"[web_fetch: empty body for {url}]"
+            result = text[:max_chars]
+            _cache_put(cache_key, result)
+            return result
         except httpx.HTTPError as e:
             return f"[web_fetch: network error for {url}: {e}]"
 
@@ -289,16 +393,13 @@ def _is_news_query(query: str) -> bool:
 
 
 async def _google_news(query: str, n: int) -> list[dict]:
-    async with httpx.AsyncClient(
+    r = await _get_client().get(
+        "https://news.google.com/rss/search",
+        params={"q": query, "hl": "en-US", "gl": "US", "ceid": "US:en"},
         timeout=20,
-        follow_redirects=True,
         headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "en-US,en;q=0.9"},
-    ) as c:
-        r = await c.get(
-            "https://news.google.com/rss/search",
-            params={"q": query, "hl": "en-US", "gl": "US", "ceid": "US:en"},
-        )
-        r.raise_for_status()
+    )
+    r.raise_for_status()
 
     root = ET.fromstring(r.text)
     out: list[dict] = []
@@ -357,13 +458,13 @@ def _favicon(url: str) -> str:
 
 
 async def _ddg_text(query: str, n: int) -> list[dict]:
-    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
-        r = await c.get(
-            "https://html.duckduckgo.com/html/",
-            params={"q": query},
-            headers={"User-Agent": "Mozilla/5.0"},
-        )
-        r.raise_for_status()
+    r = await _get_client().get(
+        "https://html.duckduckgo.com/html/",
+        params={"q": query},
+        timeout=20,
+        headers={"User-Agent": "Mozilla/5.0"},
+    )
+    r.raise_for_status()
     out: list[dict] = []
     for m in DDG_RESULT_RE.finditer(r.text):
         url = m.group(1)
@@ -386,24 +487,26 @@ async def _ddg_text(query: str, n: int) -> list[dict]:
 
 async def _ddg_images(query: str, n: int) -> list[dict]:
     """DuckDuckGo image search via the unofficial JSON endpoint."""
-    async with httpx.AsyncClient(timeout=25, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0"}) as c:
-        # First request hits a vqd token.
-        r = await c.get("https://duckduckgo.com/", params={"q": query})
-        m = re.search(r'vqd=([\d-]+)', r.text) or re.search(r'vqd="([^"]+)"', r.text)
-        if not m:
-            return []
-        vqd = m.group(1)
-        ir = await c.get(
-            "https://duckduckgo.com/i.js",
-            params={"l": "us-en", "o": "json", "q": query, "vqd": vqd, "p": "1"},
-            headers={"Referer": "https://duckduckgo.com/"},
-        )
-        if ir.status_code != 200:
-            return []
-        try:
-            data = ir.json()
-        except Exception:
-            return []
+    # Shared client also carries the cookies between the two requests.
+    c = _get_client()
+    # First request hits a vqd token.
+    r = await c.get("https://duckduckgo.com/", params={"q": query}, timeout=25)
+    m = re.search(r'vqd=([\d-]+)', r.text) or re.search(r'vqd="([^"]+)"', r.text)
+    if not m:
+        return []
+    vqd = m.group(1)
+    ir = await c.get(
+        "https://duckduckgo.com/i.js",
+        params={"l": "us-en", "o": "json", "q": query, "vqd": vqd, "p": "1"},
+        headers={"Referer": "https://duckduckgo.com/"},
+        timeout=25,
+    )
+    if ir.status_code != 200:
+        return []
+    try:
+        data = ir.json()
+    except Exception:
+        return []
     items = []
     for r in (data.get("results") or [])[:n]:
         items.append({
@@ -421,9 +524,13 @@ async def _ddg_images(query: str, n: int) -> list[dict]:
 async def _yt_search(query: str, n: int) -> list[dict]:
     """Scrape YouTube results page — no API key, no quota."""
     url = "https://www.youtube.com/results"
-    async with httpx.AsyncClient(timeout=20, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "en-US,en;q=0.9"}) as c:
-        r = await c.get(url, params={"search_query": query})
-        r.raise_for_status()
+    r = await _get_client().get(
+        url,
+        params={"search_query": query},
+        timeout=20,
+        headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "en-US,en;q=0.9"},
+    )
+    r.raise_for_status()
     # Pull videoRenderer entries from ytInitialData
     m = re.search(r"var ytInitialData = (\{.*?\});</script>", r.text, re.DOTALL)
     if not m:
@@ -473,13 +580,13 @@ async def _yt_search(query: str, n: int) -> list[dict]:
 async def _brave(query: str, n: int) -> list[dict]:
     key = os.environ.get("BRAVE_API_KEY", "")
     if not key: raise RuntimeError("BRAVE_API_KEY missing")
-    async with httpx.AsyncClient(timeout=20) as c:
-        r = await c.get(
-            "https://api.search.brave.com/res/v1/web/search",
-            params={"q": query, "count": n},
-            headers={"X-Subscription-Token": key, "Accept": "application/json"},
-        )
-        r.raise_for_status()
+    r = await _get_client().get(
+        "https://api.search.brave.com/res/v1/web/search",
+        params={"q": query, "count": n},
+        timeout=20,
+        headers={"X-Subscription-Token": key, "Accept": "application/json"},
+    )
+    r.raise_for_status()
     data = r.json()
     return [
         {
@@ -495,12 +602,12 @@ async def _brave(query: str, n: int) -> list[dict]:
 async def _tavily(query: str, n: int) -> list[dict]:
     key = os.environ.get("TAVILY_API_KEY", "")
     if not key: raise RuntimeError("TAVILY_API_KEY missing")
-    async with httpx.AsyncClient(timeout=20) as c:
-        r = await c.post(
-            "https://api.tavily.com/search",
-            json={"api_key": key, "query": query, "max_results": n, "include_images": True},
-        )
-        r.raise_for_status()
+    r = await _get_client().post(
+        "https://api.tavily.com/search",
+        json={"api_key": key, "query": query, "max_results": n, "include_images": True},
+        timeout=20,
+    )
+    r.raise_for_status()
     data = r.json()
     return [
         {
@@ -516,9 +623,12 @@ async def _tavily(query: str, n: int) -> list[dict]:
 async def _serpapi(query: str, n: int) -> list[dict]:
     key = os.environ.get("SERPAPI_API_KEY", "")
     if not key: raise RuntimeError("SERPAPI_API_KEY missing")
-    async with httpx.AsyncClient(timeout=20) as c:
-        r = await c.get("https://serpapi.com/search.json", params={"q": query, "api_key": key, "num": n})
-        r.raise_for_status()
+    r = await _get_client().get(
+        "https://serpapi.com/search.json",
+        params={"q": query, "api_key": key, "num": n},
+        timeout=20,
+    )
+    r.raise_for_status()
     data = r.json()
     return [
         {

@@ -1,0 +1,6 @@
+# Vision — webcam capture, screenshots, OCR, image IO.
+# CPU-usable, but heavy wheels; install with:  pip install -r requirements-vision.txt
+opencv-python>=4.9.0              # webcam capture + frame ops
+mss>=9.0.1                        # screenshot capture
+pytesseract>=0.3.10               # OCR (needs tesseract.exe; winget install UB-Mannheim.TesseractOCR)
+Pillow>=10.0.0                    # image IO

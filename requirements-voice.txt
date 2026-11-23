@@ -1,0 +1,11 @@
+# Voice — STT (Whisper) + TTS (Piper / Edge / Riva).
+# Install with:  pip install -r requirements-voice.txt
+edge-tts>=6.1.12                  # online Microsoft neural TTS fallback (en-GB Ryan / Thomas)
+piper-tts>=1.4.2                  # local JARVIS voice (jgkawell/jarvis ONNX)
+faster-whisper>=1.0.0             # server-side STT
+nvidia-riva-client>=2.25.0        # optional NVIDIA Riva cloud TTS
+SpeechRecognition>=3.10.0         # optional voice_tools listen/microphone_status
+pyttsx3>=2.90                     # optional voice_tools local speak fallback
+
+# OPTIONAL - GPU acceleration for Whisper STT (cuFFT/cuBLAS/cuDNN DLLs):
+#   pip install nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-cufft-cu12

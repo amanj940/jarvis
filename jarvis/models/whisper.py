@@ -75,13 +75,21 @@ def _switch_whisper_to_cpu() -> None:
 
 
 def _evict_whisper_from_gpu() -> None:
-    """Eviction callback retained for API parity, but Whisper-turbo (~1.5 GB)
-    + FLUX Q6_K (~6 GB) coexist comfortably on a 16 GB GPU. We therefore
-    keep Whisper resident across image-gen runs so STT stays instant. Set
-    EVICT_WHISPER_FOR_FLUX=1 in the env to restore the old behaviour on
-    tighter cards.
+    """Eviction callback invoked by the VRAM manager when another GPU job
+    (FLUX / SF3D) acquires the exclusive GPU lock.
+
+    Phase 3: eviction is ON by default. Whisper-turbo is ~1.5 GB and the
+    FLUX text encoder alone is ~8 GB, so on a 16 GB card the two together
+    leave almost no headroom for activations — previously this callback
+    was a no-op unless EVICT_WHISPER_FOR_FLUX=1, so the "exclusive" lock
+    never actually freed anything and FLUX gens could OOM or spill to
+    sysmem. Evicting just drops the cached model object; the next STT
+    request lazy-reloads it via _get_whisper_model() (a ~1-2 s cost, and
+    only when the user actually speaks again). Set
+    EVICT_WHISPER_FOR_FLUX=0 to keep Whisper resident across media jobs
+    (only safe on cards with comfortable VRAM headroom).
     """
-    if os.getenv("EVICT_WHISPER_FOR_FLUX", "0") != "1":
+    if os.getenv("EVICT_WHISPER_FOR_FLUX", "1") == "0":
         return
     global _whisper_model, _whisper_device
     with _whisper_lock:
