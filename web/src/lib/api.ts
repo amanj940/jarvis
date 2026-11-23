@@ -1,12 +1,13 @@
 import type { Health, SystemStats } from "./store";
+import { JARVIS_API_URL } from "./config";
 
 // In Tauri release mode the webview loads local files (tauri://localhost/)
 // so relative URLs like /api/health resolve to tauri://localhost/api/... and
-// never reach the Python backend at 127.0.0.1:7341.
+// never reach the Python backend (see JARVIS_API_URL in ./config).
 // window.__TAURI__ is injected by Tauri when withGlobalTauri=true.
 export const API_BASE =
   typeof window !== "undefined" && (window as any).__TAURI__
-    ? "http://127.0.0.1:7341"
+    ? JARVIS_API_URL
     : "";
 
 export async function getHealth(): Promise<Health> {

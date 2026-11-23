@@ -28,7 +28,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..config import Config
-from ..core.memory import Memory
+from ..core.memory_store import MemoryStore
 from ..core.orchestrator import Orchestrator
 from ..plugins.registry import PluginRegistry
 from . import routes, ws
@@ -58,7 +58,7 @@ def create_app(
     cfg: Config,
     orchestrator: Orchestrator,
     registry: PluginRegistry,
-    memory: Memory,
+    memory: MemoryStore,
     agents,
     web_dist: Path | None = None,
 ) -> FastAPI:
@@ -88,7 +88,7 @@ def create_app(
             log.info("preloading models in background…")
             # FLUX first so it lands in clean VRAM.
             try:
-                from ..plugins import media_generation as _mg
+                from ..plugins import media as _mg
                 if getattr(_mg, "_FLUX_PRELOAD_AT_STARTUP", False):
                     log.info("Pre-warming FLUX.2-klein-4B pipeline…")
                     await loop.run_in_executor(None, _mg._load_flux_pipeline, cfg)

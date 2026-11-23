@@ -19,8 +19,25 @@ const fs = require("fs");
 const { spawn } = require("child_process");
 const http = require("http");
 
-const BACKEND_PORT = process.env.JARVIS_PORT ? parseInt(process.env.JARVIS_PORT, 10) : 7341;
-const BACKEND_URL  = `http://127.0.0.1:${BACKEND_PORT}`;
+// Backend connection — single source: web/.env (VITE_JARVIS_HOST/PORT,
+// see web/.env.example), overridable via JARVIS_HOST / JARVIS_PORT env
+// vars. Defaults 127.0.0.1:7341. The renderer reads the same file through
+// Vite (web/src/lib/config.ts), so shell and UI always agree.
+function loadWebEnv() {
+  const out = {};
+  try {
+    const envPath = path.resolve(__dirname, "..", "web", ".env");
+    for (const line of fs.readFileSync(envPath, "utf8").split(/\r?\n/)) {
+      const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
+      if (m) out[m[1]] = m[2].replace(/^["']|["']$/g, "");
+    }
+  } catch { /* no web/.env — defaults apply */ }
+  return out;
+}
+const _webEnv = loadWebEnv();
+const BACKEND_HOST = process.env.JARVIS_HOST || _webEnv.VITE_JARVIS_HOST || "127.0.0.1";
+const BACKEND_PORT = parseInt(process.env.JARVIS_PORT || _webEnv.VITE_JARVIS_PORT || "7341", 10);
+const BACKEND_URL  = `http://${BACKEND_HOST}:${BACKEND_PORT}`;
 const PROJECT_ROOT = path.resolve(__dirname, "..");
 const TRAY_ICON_PATH = path.resolve(PROJECT_ROOT, "web", "public", "favicon.png");
 const TRAY_ICON_FALLBACK_SVG = path.resolve(PROJECT_ROOT, "web", "public", "favicon.svg");
@@ -72,7 +89,7 @@ function startBackend() {
     console.log("[electron] spawning backend:", venvPython);
     // --no-browser: Electron IS the UI (loads BACKEND_URL in-window). Without
     // this the backend would also pop a separate browser tab on the web app.
-    backend = spawn(venvPython, ["-m", "jarvis.main", "--port", String(BACKEND_PORT), "--no-browser"], {
+    backend = spawn(venvPython, ["-m", "jarvis.main", "--host", BACKEND_HOST, "--port", String(BACKEND_PORT), "--no-browser"], {
       cwd: PROJECT_ROOT,
       env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" },
       stdio: "inherit",

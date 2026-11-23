@@ -14,7 +14,7 @@ class JarvisWS {
     if (url) {
       this.url = url;
     } else if (API_BASE) {
-      // Tauri mode: API_BASE = "http://127.0.0.1:7341" → ws://127.0.0.1:7341/ws
+      // Tauri mode: API_BASE = JARVIS_API_URL (see lib/config.ts) → ws://…/ws
       this.url = API_BASE.replace(/^http/, "ws") + "/ws";
     } else {
       const proto = location.protocol === "https:" ? "wss:" : "ws:";

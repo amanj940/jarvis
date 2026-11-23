@@ -146,7 +146,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                 name = msg.get("name", "")
                 agent = agents.get(name)
                 if agent:
-                    orchestrator.set_agent(agent)
+                    orchestrator.set_mode(agent)
                     await safe_send({"type": "info", "text": f"agent active: {name}"})
                 else:
                     await safe_send({"type": "error", "text": f"no such agent: {name}"})
@@ -232,12 +232,12 @@ async def _handle_command(send, line: str, orchestrator, memory, agents, cfg, ca
         await send({"type": "assistant", "text": "**Agents**\n" + rows})
     elif cmd == "agent":
         if arg.lower() in {"", "jarvis", "default", "base"}:
-            orchestrator.set_agent(None)
+            orchestrator.set_mode(None)
             await send({"type": "info", "text": "agent active: jarvis"})
             return
         agent = agents.get(arg)
         if agent:
-            orchestrator.set_agent(agent)
+            orchestrator.set_mode(agent)
             await send({"type": "info", "text": f"agent active: {arg}"})
         else:
             await send({"type": "error", "text": f"no such agent: {arg}"})
@@ -245,7 +245,7 @@ async def _handle_command(send, line: str, orchestrator, memory, agents, cfg, ca
         rows = "\n".join(f"- `{t.name}` ({t.permission.value}) — {t.description}" for t in orchestrator.registry.all_tools())
         await send({"type": "assistant", "text": "**Tools**\n" + rows})
     elif cmd in {"image-model", "imagemodel", "imgmodel"}:
-        from ..plugins.media_generation import list_image_models, select_image_model
+        from ..plugins.media import list_image_models, select_image_model
         if not arg:
             state = list_image_models(cfg)
             rows = "\n".join(

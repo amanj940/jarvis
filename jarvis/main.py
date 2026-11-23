@@ -19,12 +19,12 @@ for _s in (sys.stdout, sys.stderr):
 # of VRAM and the default allocator fragments enough to OOM at 16 GB.
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
-from .agents import build_default_registry
+from .core.modes import build_default_registry
 from .config import load_config
 from .core.brain import LLMBrain
 from .core.hooks import HookRegistry
 from .core.logger import ActionLog, setup_logging
-from .core.memory import Memory
+from .core.memory_store import MemoryStore
 from .core.orchestrator import Orchestrator
 from .core.permissions import PermissionManager
 from .plugins.registry import PluginRegistry
@@ -47,7 +47,6 @@ def build_services(cfg_path: str | None):
     cfg = load_config(cfg_path)
     logger = setup_logging(cfg)
     actions = ActionLog(cfg)
-    memory = Memory(cfg)
     permissions = PermissionManager(cfg)
     brain = LLMBrain(cfg)
 
@@ -65,6 +64,10 @@ def build_services(cfg_path: str | None):
         except Exception as e:  # noqa: BLE001
             logger.warning("semantic memory disabled: %s", e)
             semantic = None
+
+    # One unified store: keyword Memory + (optional) semantic memory over
+    # the same SQLite file. The orchestrator, tools and routes all use this.
+    memory = MemoryStore(cfg, semantic=semantic)
 
     services = {
         "cfg": cfg,
@@ -86,7 +89,6 @@ def build_services(cfg_path: str | None):
         permissions=permissions,
         actions=actions,
         hooks=hooks,
-        semantic=semantic,
     )
     # Expose the orchestrator back to plugins (specifically the parallel_tasks
     # swarm tool, which fans calls out through orchestrator._invoke_tool).

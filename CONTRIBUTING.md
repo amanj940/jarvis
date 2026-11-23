@@ -121,7 +121,8 @@ enforced regardless of tier — don't try to route around it.
 
 - Stack: **React 18 · TypeScript · Three.js** (`@react-three/fiber` + `drei`) ·
   **Framer Motion · Zustand · Tailwind · Vite · Electron**.
-- State lives in `web/src/lib/store.ts` (Zustand, persisted to localStorage).
+- State lives in `web/src/lib/store/` (Zustand, persisted to localStorage;
+  `store.ts` re-exports it). Voice lives in `web/src/lib/voice/`.
 - WebSocket/event wiring is in `web/src/lib/ws.ts` — it only **adds** to chat/media,
   never wipes. Keep that invariant.
 - Keep TypeScript strict-clean: `cd web && npm run build` should pass.

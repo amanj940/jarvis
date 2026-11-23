@@ -9,14 +9,11 @@ import asyncio
 import logging
 import re
 import time
-from typing import Any, AsyncIterator, TYPE_CHECKING
+from typing import Any, AsyncIterator
 
 import json
 
-if TYPE_CHECKING:
-    from .semantic_memory import SemanticMemory
-
-from ..agents.base import Agent
+from .modes import Mode
 from ..config import Config
 from ..plugins.base import Tool
 from ..plugins.registry import PluginRegistry
@@ -26,7 +23,7 @@ from .task_progress import set_reporter
 from .hooks import HookRegistry
 from .intent_router import IntentMatch, classify as classify_intent, classify_multi
 from .logger import ActionLog
-from .memory import Memory
+from .memory_store import MemoryStore
 from .permissions import (
     Decision,
     Permission,
@@ -74,11 +71,10 @@ class Orchestrator:
         cfg: Config,
         brain: LLMBrain,
         registry: PluginRegistry,
-        memory: Memory,
+        memory: MemoryStore,
         permissions: PermissionManager,
         actions: ActionLog,
         hooks: HookRegistry | None = None,
-        semantic: "SemanticMemory | None" = None,
     ):
         self.cfg = cfg
         self.brain = brain
@@ -87,7 +83,6 @@ class Orchestrator:
         self.permissions = permissions
         self.actions = actions
         self.hooks = hooks or HookRegistry()
-        self.semantic = semantic
         # Long-term memories recalled for the current user turn. Rebuilt each
         # turn and injected into the system prompt by _system_prompt().
         self._recalled: list[dict] = []
@@ -97,7 +92,7 @@ class Orchestrator:
         # turn, injected into the system prompt to anchor multi-step execution.
         self._current_plan: str = ""
         self._history: list[dict] = []
-        self._active_agent: Agent | None = None
+        self._active_mode: Mode | None = None
         # Name of the tool currently running, or None when idle. Used by the
         # WS layer to decide whether a new chat message should cancel the
         # in-flight task. Heavy tools (image_generate, image_to_3d,
@@ -132,12 +127,12 @@ class Orchestrator:
             f"permission_mode={self.cfg.permissions.mode}."
         )
         persona = "\n\n".join([persona, runtime])
-        if self._active_agent and self._active_agent.system_prompt:
+        if self._active_mode and self._active_mode.system_prompt:
             persona = "\n\n".join(
                 [
                     persona,
-                    f"Current operating mode: {self._active_agent.name}.",
-                    self._active_agent.system_prompt.strip(),
+                    f"Current operating mode: {self._active_mode.name}.",
+                    self._active_mode.system_prompt.strip(),
                 ]
             )
         if self._running_summary:
@@ -174,7 +169,7 @@ class Orchestrator:
 
     def _ultimate_on(self, feature: str) -> bool:
         u = getattr(self.cfg, "ultimate", None)
-        if u is None or not u.enabled or self.semantic is None:
+        if u is None or not u.enabled or not self.memory.semantic_available:
             return False
         return bool(getattr(u, feature, False))
 
@@ -182,7 +177,7 @@ class Orchestrator:
         if not self._ultimate_on("semantic_memory"):
             return []
         try:
-            return await self.semantic.recall(user_text)
+            return await self.memory.recall(user_text)
         except Exception:  # noqa: BLE001
             log.exception("semantic recall failed")
             return []
@@ -382,7 +377,7 @@ class Orchestrator:
             return
         kind, text = fact
         try:
-            wrote = await self.semantic.remember(text, kind=kind, meta={"source": "auto"})
+            wrote = await self.memory.remember(text, kind=kind, meta={"source": "auto"})
             if wrote:
                 log.info("auto-remembered [%s] %s", kind, text[:80])
         except Exception:  # noqa: BLE001
@@ -391,8 +386,12 @@ class Orchestrator:
     def reset(self) -> None:
         self._history.clear()
 
-    def set_agent(self, agent: Agent | None) -> None:
-        self._active_agent = agent
+    def set_mode(self, mode: Mode | None) -> None:
+        self._active_mode = mode
+
+    # Backwards-compatible alias (old /agent command name).
+    def set_agent(self, agent: Mode | None) -> None:
+        self.set_mode(agent)
 
     def build_messages(self, user_text: str) -> list[dict[str, str]]:
         msgs: list[dict[str, str]] = [
@@ -763,6 +762,29 @@ class Orchestrator:
                     "role": "user",
                     "content": f"<tool_result name=\"{tc.name}\" ok=\"false\">"
                                f"unknown tool</tool_result>",
+                }
+            )
+            return
+
+        # Active-mode allowlist (Phase 2: the old agent allowlists were dead
+        # code; now they are enforced here — the single choke point for the
+        # tool loop, intent fast-path and swarm alike).
+        if self._active_mode is not None and not self._active_mode.applies_to(tool.name):
+            denial = (
+                f"tool '{tool.name}' is not available in "
+                f"{self._active_mode.name} mode"
+            )
+            log.info("tool '%s' blocked by active mode '%s'", tool.name, self._active_mode.name)
+            yield Event(
+                EventKind.TOOL_RESULT,
+                text=denial,
+                payload={"tool": tool.name, "ok": False, "denied": True},
+            )
+            self._history.append(
+                {
+                    "role": "user",
+                    "content": f"<tool_result name=\"{tool.name}\" ok=\"false\">"
+                               f"{denial}</tool_result>",
                 }
             )
             return

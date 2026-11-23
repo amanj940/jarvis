@@ -14,7 +14,7 @@ file.
 - Place it at: `data/models/flux-2-klein-4b-BF16.gguf`
 - Base pipeline components: https://huggingface.co/black-forest-labs/FLUX.2-klein-4B
 
-If the file is missing, `jarvis/plugins/media_generation.py` attempts to
+If the file is missing, `jarvis/plugins/media/flux.py` attempts to
 download it automatically with `huggingface_hub` on first use.
 
 The required Python packages are listed in `requirements.txt`; the FLUX path
