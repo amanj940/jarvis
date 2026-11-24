@@ -1,9 +1,10 @@
 """Tool registrations for the opportunity plugin.
 
-``opportunity_scan`` runs the scan with whatever fetcher was wired at
-registration time — with no fetcher it is a documented no-op (see
-``jobs.py``). Nothing here contacts a platform, submits anything, or
-spends money; leads are local SQLite rows a human reviews.
+``opportunity_scan`` runs the scan with the web_search fetcher wired at
+registration time (see ``jobs.py``: ``build_web_search_fetcher``) — search
+snippets only, no page is ever fetched. Nothing here contacts a platform,
+submits anything, or spends money; leads are local SQLite rows a human
+reviews.
 """
 from __future__ import annotations
 
@@ -12,7 +13,12 @@ import json
 
 from ...core.permissions import Permission
 from ..base import PluginInfo, tool
-from .jobs import format_alerts, register_opportunity_daily_job, run_opportunity_scan
+from .jobs import (
+    build_web_search_fetcher,
+    format_alerts,
+    register_opportunity_daily_job,
+    run_opportunity_scan,
+)
 from .leads import LeadsStore
 from .scoring import score_lead
 from .sources import list_sources
@@ -32,6 +38,7 @@ def register(registry):
     if toggle is not None and not toggle.enabled:
         return
     store = _store(cfg)
+    fetcher = build_web_search_fetcher(registry)
 
     @tool(
         name="opportunity_add_lead",
@@ -82,15 +89,15 @@ def register(registry):
     @tool(
         name="opportunity_scan",
         description=(
-            "Run one opportunity scan now. Without a configured fetcher it "
-            "reports scanned=0 (see docs/youtube-opportunity.md); it never "
+            "Run one opportunity scan now over the curated sources "
+            "(web_search snippets only, no page is ever fetched); it never "
             "submits, applies, or spends anything."
         ),
         permission=Permission.CAUTION,
         parameters={"type": "object", "properties": {}},
     )
     async def opportunity_scan() -> str:
-        summary = await run_opportunity_scan(store)
+        summary = await run_opportunity_scan(store, fetcher=fetcher)
         return _json(summary)
 
     @tool(
