@@ -32,10 +32,12 @@ verification, and the submission.
 | `jarvis/plugins/bounty/classification.py` | Rule-based triage: severity, CWE, remediation. Pure logic, no I/O. |
 | `jarvis/plugins/bounty/store.py` | SQLite store (`data/bounty.db`): programs, targets, findings. |
 | `jarvis/plugins/bounty/programs.py` | Static platform notes (HackerOne, Bugcrowd, Intigriti, YesWeHack). |
+| `jarvis/plugins/bounty/programs_sync.py` | Sync public program listings into the store via `web_search` (unreviewed, dedup by URL). |
 | `jarvis/plugins/bounty/report.py` | Markdown disclosure draft template (always bannered DRAFT). |
 | `jarvis/plugins/bounty/tools.py` | The `bounty_*` tools registered with the plugin registry. |
 | `jarvis/agents/security.py` | `SecurityAgent` — plans and runs the workflow via the tool registry. |
 | `tests/test_bounty.py` | Unit tests (classification, scope, store, report, agent scope gate). |
+| `tests/test_bounty_sync.py` | Unit tests for program sync (fake `web_search`, dedup, skip-on-failure). |
 
 The plugin is discovered automatically by `PluginRegistry.load_all()`:
 `jarvis/plugins/bounty/__init__.py` exposes `register()`.
@@ -54,6 +56,7 @@ The plugin is discovered automatically by `PluginRegistry.load_all()`:
 | `bounty_list_findings` | SAFE | List findings, optionally by program/status. |
 | `bounty_render_report` | SAFE | Render a finding as a local markdown disclosure draft. |
 | `bounty_program_notes` | SAFE | Static notes for a platform. |
+| `bounty_sync_programs` | CAUTION | Sync public program listings via `web_search` (unreviewed, dedup by URL). |
 
 Finding statuses: `draft` → `verified` → `reported` → `triaged` /
 `resolved`; also `duplicate`, `out_of_scope`, `rejected`.
@@ -73,6 +76,28 @@ Example (through chat):
 Add the Acme program on HackerOne with scope example.com,
 then check whether sub.example.com is in scope.
 ```
+
+## Program sync
+
+`bounty_sync_programs` keeps the local program list fresh from the
+platforms' **public** directories — HackerOne, Bugcrowd, Intigriti,
+YesWeHack — through the existing `web_search` tool (one site-scoped
+query per platform, no API keys, no login, no authenticated access).
+
+- Every synced program is stored **unreviewed** with an **empty scope**,
+  so nothing is in scope (and nothing can be tested) until a human
+  reads the program's own scope page and records the real scope with
+  `bounty_add_program` / `bounty_add_target`.
+- The scope hint from the search snippet is kept in the program notes
+  for the human reviewer; it is never treated as scope.
+- Dedup is by normalized URL (lower-cased host, no fragment, no
+  tracking params, no trailing slash). A second sync adds zero new
+  programs.
+- A platform whose search fails is skipped and reported, never fatal;
+  the other platforms still sync.
+- Live sync is unverified in the sandbox (proxy-blocked web search);
+  try it on a networked machine. Unit tests use a fake `web_search`
+  (`tests/test_bounty_sync.py`).
 
 ## Disclosure path
 
