@@ -21,11 +21,17 @@ export type NeonWindowKind =
   | "model3d"     // Generated 3D model (one window per model3d card)
   | "terminal"    // Live backend log stream
   | "browser"     // In-app article reader (store.reader URL)
+  | "street-map"  // Street map for a globe city (MapLibre + OpenFreeMap)
   | "webcam";     // Live local webcam feed
 
 export interface NeonWindowPayload {
   /** Media card id (galaxy / model3d windows). */
   cardId?: string;
+  /** Street-map window: city centre. Re-opening for another city updates it. */
+  lat?: number;
+  lon?: number;
+  /** Street-map window: city display name. */
+  name?: string;
 }
 
 export interface NeonWindowState {
@@ -69,6 +75,7 @@ const DEFAULT_SIZE: Record<NeonWindowKind, { w: number; h: number }> = {
   model3d:    { w: 680, h: 520 },
   terminal:   { w: 640, h: 420 },
   browser:    { w: 720, h: 560 },
+  "street-map": { w: 760, h: 560 },
   webcam:     { w: 560, h: 420 },
 };
 
@@ -78,6 +85,7 @@ const DEFAULT_TITLE: Record<NeonWindowKind, { title: string; titleAr: string }> 
   model3d:    { title: "3D MODEL",        titleAr: "مجسّم ثلاثي الأبعاد" },
   terminal:   { title: "TERMINAL",        titleAr: "الطرفية" },
   browser:    { title: "BROWSER",         titleAr: "المتصفح" },
+  "street-map": { title: "STREET MAP",    titleAr: "خريطة الشوارع" },
   webcam:     { title: "WEBCAM",          titleAr: "كاميرا الويب" },
 };
 
@@ -86,6 +94,7 @@ const SINGLETON_KINDS: ReadonlySet<NeonWindowKind> = new Set([
   "media-bay",
   "terminal",
   "browser",
+  "street-map",
   "webcam",
 ]);
 
@@ -106,6 +115,7 @@ const ALL_KINDS: ReadonlySet<string> = new Set([
   "model3d",
   "terminal",
   "browser",
+  "street-map",
   "webcam",
 ]);
 
@@ -141,8 +151,14 @@ function parsePersistedWindow(raw: unknown, vw: number, vh: number): NeonWindowS
 
   let payload: NeonWindowPayload | undefined;
   if (r.payload && typeof r.payload === "object") {
-    const cardId = (r.payload as Record<string, unknown>).cardId;
-    if (typeof cardId === "string" && cardId.length > 0) payload = { cardId };
+    const p = r.payload as Record<string, unknown>;
+    const next: NeonWindowPayload = {};
+    if (typeof p.cardId === "string" && p.cardId.length > 0) next.cardId = p.cardId;
+    // Street-map payload: only well-formed coordinates survive a restore.
+    if (isFiniteNumber(p.lat) && p.lat >= -90 && p.lat <= 90) next.lat = p.lat;
+    if (isFiniteNumber(p.lon) && p.lon >= -180 && p.lon <= 180) next.lon = p.lon;
+    if (typeof p.name === "string" && p.name.length > 0) next.name = p.name;
+    if (Object.keys(next).length > 0) payload = next;
   }
 
   return {
@@ -288,6 +304,8 @@ export const useNeonWindowStore = create<NeonWindowStore>()((set, get) => ({
     const st = get();
     const defaults = DEFAULT_TITLE[kind];
     // Singleton: focus + restore the existing window instead of duplicating.
+    // A re-open with a new title/payload re-targets it (street-map: another
+    // city) instead of leaving the old city on screen.
     if (SINGLETON_KINDS.has(kind)) {
       const existing = st.windows.find((w) => w.kind === kind);
       if (existing) {
@@ -295,7 +313,18 @@ export const useNeonWindowStore = create<NeonWindowStore>()((set, get) => ({
         set({
           zTop: z,
           windows: st.windows.map((w) =>
-            w.id === existing.id ? { ...w, minimized: false, z } : w,
+            w.id === existing.id
+              ? {
+                  ...w,
+                  minimized: false,
+                  z,
+                  ...(opts?.title ? { title: opts.title } : {}),
+                  ...(opts?.titleAr !== undefined
+                    ? { titleAr: opts.titleAr }
+                    : {}),
+                  ...(opts?.payload ? { payload: opts.payload } : {}),
+                }
+              : w,
           ),
         });
         return existing.id;
@@ -402,6 +431,13 @@ export function openTerminal(): string {
 }
 export function openBrowser(): string {
   return useNeonWindowStore.getState().openWindow("browser");
+}
+export function openStreetMapWindow(lat: number, lon: number, name: string): string {
+  return useNeonWindowStore.getState().openWindow("street-map", {
+    title: `STREET MAP — ${name.toUpperCase()}`,
+    titleAr: "خريطة الشوارع",
+    payload: { lat, lon, name },
+  });
 }
 export function openWebcam(): string {
   return useNeonWindowStore.getState().openWindow("webcam");
