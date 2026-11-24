@@ -151,6 +151,32 @@ class MemoryStore:
     def delete(self, kind: str, identifier: str) -> bool:
         return self.keyword.delete(kind, identifier)
 
+    # ---- schema-less entities (audit/fixes db_* tools) ----
+    def store_entity(
+        self,
+        collection: str,
+        key: str,
+        data: dict,
+        tags: Iterable[str] | None = None,
+    ) -> dict[str, Any]:
+        return self.keyword.store_entity(collection, key, data, tags)
+
+    def set_entity_field(
+        self, collection: str, key: str, field_name: str, field_value: Any
+    ) -> dict[str, Any]:
+        return self.keyword.set_entity_field(collection, key, field_name, field_value)
+
+    def get_entity(self, collection: str, key: str) -> dict[str, Any] | None:
+        return self.keyword.get_entity(collection, key)
+
+    def query_entities(
+        self, collection: str = "", query: str = "", tag: str = ""
+    ) -> list[dict[str, Any]]:
+        return self.keyword.query_entities(collection, query, tag)
+
+    def list_collections(self) -> list[dict[str, Any]]:
+        return self.keyword.list_collections()
+
     # ------------------------------------------------------------------
     # Fallback: anything else (e.g. _conn) delegates to the keyword store.
     # ------------------------------------------------------------------
