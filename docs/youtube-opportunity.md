@@ -99,16 +99,45 @@ from jarvis.plugins.opportunity.leads import LeadsStore
 
 store, scheduler = build_task_system(cfg)
 leads = LeadsStore(cfg.abs_path("data/opportunity.db"))
-register_opportunity_daily_job(store, scheduler, leads, fetcher=my_fetcher)
+# Wire the production fetcher: pass a registry and the daily job builds
+# build_web_search_fetcher(registry) for you (or pass fetcher= explicitly).
+register_opportunity_daily_job(store, scheduler, leads, registry=registry)
 # task: kind "opportunity_scan", schedule "0 9 * * *" (daily 09:00 UTC)
 ```
 
+The fetcher is `jobs.build_web_search_fetcher(registry)` — one
+`web_search` query per curated source, built from `sources.py`
+(`site:<domain>` + a phrase per kind):
+
+| Source | Query |
+|---|---|
+| HackerOne | `site:hackerone.com bug bounty programs` |
+| Bugcrowd | `site:bugcrowd.com bug bounty programs` |
+| Intigriti | `site:intigriti.com bug bounty programs` |
+| YesWeHack | `site:yeswehack.com bug bounty programs` |
+| Upwork | `site:upwork.com freelance remote jobs` |
+| Product Hunt | `site:producthunt.com new product launches` |
+| Hacker News | `site:news.ycombinator.com startup launches` |
+
+Limits: 5 results per query (35 candidates max per scan), one failing
+source is logged and skipped instead of killing the scan, results are
+deduped by normalised URL (within the run and in the store), and
+`web_search` itself caches successful results for 10 minutes. The
+default search provider is DuckDuckGo — no key, no paid API. Only
+search-result snippets are read: no page is ever fetched, nothing
+logs in anywhere. Links may still point at pages that need an account
+to view or apply (Upwork, HackerOne); those are leads for a human to
+review, never something Jarvis acts on.
+
 The fetcher is injected — a callable returning candidate dicts
 (`url`, `title`, `source`, `kind`, optional `description`), sync or
-async. **With no fetcher the scan is a documented no-op**
-(`scanned: 0`) rather than pretending to work; wire one over
-`web_search` or a source API. The handler's result is the morning
-alert text (`format_alerts`), surfaced like any other task result.
+async — so tests (and any future source API) can still inject a fake.
+**With no fetcher the scan is a documented no-op**
+(`scanned: 0`) rather than pretending to work; the manual
+`opportunity_scan` tool still runs without a fetcher, so it stays a
+no-op until it is wired the same way. The handler's result is the
+morning alert text (`format_alerts`), surfaced like any other task
+result.
 
 ### Tools
 
@@ -126,3 +155,4 @@ alert text (`format_alerts`), surfaced like any other task result.
   anyone, or spends money. Leads are local rows a human reviews.
 - Upload/publish paths do not exist in either package; adding one
   needs explicit human approval and a DANGEROUS permission, by design.
+
