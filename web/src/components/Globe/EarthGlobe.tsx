@@ -514,6 +514,10 @@ export default function EarthGlobe(props: EarthGlobeProps) {
 
   return (
     <group ref={groupRef}>
+      {/* Ambient & directional sun lighting for realistic day/night surface & clouds */}
+      <ambientLight intensity={0.8} />
+      <directionalLight position={[5, 3, 5]} intensity={2.0} />
+
       {/* Earth sphere */}
       <mesh>
         <sphereGeometry args={[radius, 64, 64]} />
