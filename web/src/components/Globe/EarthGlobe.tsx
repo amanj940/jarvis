@@ -21,6 +21,15 @@
  * while listening, a pulse while speaking, a slow glow while thinking.
  * If the globe ever fails to render, the parent falls back to the old
  * particle orb (see `GlobeErrorBoundary` + LivingEntityCore).
+ *
+ * Zoom: mouse-wheel zoom is enabled on the OrbitControls in
+ * LivingEntityCore (min/max distance in cities.ts). City dots from
+ * cities.ts are always on the surface; their text labels appear only when
+ * zoomed in close (camera distance < ~5.5) and only for cities on the
+ * hemisphere facing the camera — globe.gl-style detail, implemented on
+ * this custom globe (react-globe.gl cannot live inside the existing
+ * R3F Canvas: it owns its own WebGL renderer, and globe.gl 2.46 needs
+ * three >= 0.179 while this project pins three 0.169 with R3F 8).
  */
 import {
   Component,
@@ -31,6 +40,7 @@ import {
   type ReactNode,
 } from "react";
 import { useFrame } from "@react-three/fiber";
+import { Html } from "@react-three/drei";
 import * as THREE from "three";
 import { useStore, type OrbState } from "../../lib/store";
 import { useReducedMotion } from "../../lib/useReducedMotion";
@@ -39,6 +49,11 @@ import {
   latLonToVec3,
   subscribeGlobeLayers,
 } from "./GlobeLayers";
+import {
+  WORLD_CITIES,
+  shouldShowCityLabels,
+  type WorldCity,
+} from "./cities";
 import type { GlobeArc, GlobeLayer, GlobeMarker } from "./GlobeMarker";
 
 export interface EarthGlobeProps {
@@ -275,6 +290,8 @@ export class GlobeErrorBoundary extends Component<BoundaryProps, BoundaryState> 
   }
 }
 
+const UP_AXIS = new THREE.Vector3(0, 1, 0);
+
 // ── Graticule geometry (3D lines, rebuilt once) ─────────────────────────────
 function buildGraticule(radius: number): THREE.BufferGeometry {
   const points: number[] = [];
@@ -376,6 +393,44 @@ export default function EarthGlobe(props: EarthGlobeProps) {
     [arcs, radius]
   );
 
+  // ── Zoom detail: city dots + labels ─────────────────────────────────────
+  // City surface positions (local space; the group rotation moves them).
+  const cityPositions = useMemo(
+    () =>
+      WORLD_CITIES.map((city) => ({
+        city,
+        pos: latLonToVec3(city.lat, city.lon, radius * 1.015),
+      })),
+    [radius]
+  );
+  // One shared dot geometry/material for all cities (cheap on a weak GPU).
+  const cityDotGeo = useMemo(
+    () => new THREE.SphereGeometry(radius * 0.014, 8, 8),
+    [radius]
+  );
+  const cityDotMat = useMemo(
+    () => new THREE.MeshBasicMaterial({ color: "#7dd3fc" }),
+    []
+  );
+
+  // Labels appear only when zoomed in (hysteresis) and only for cities on
+  // the camera-facing hemisphere. State changes only on threshold crossing,
+  // never per frame, so the frame loop causes no React re-renders.
+  const [showCityLabels, setShowCityLabels] = useState(false);
+  const showCityLabelsRef = useRef(false);
+  const [visibleCityIds, setVisibleCityIds] = useState<string[]>([]);
+  const visibleCityIdsRef = useRef<string[]>([]);
+  const tmpCityPos = useRef(new THREE.Vector3());
+  const tmpCamDir = useRef(new THREE.Vector3());
+  const visibleCities = useMemo(() => {
+    const byId = new Map(cityPositions.map((c) => [c.city.id, c]));
+    return visibleCityIds
+      .map((id) => byId.get(id))
+      .filter(
+        (c): c is { city: WorldCity; pos: THREE.Vector3 } => c !== undefined
+      );
+  }, [visibleCityIds, cityPositions]);
+
   // Try bundled real textures; silently keep the procedural ones on failure.
   useEffect(() => {
     let alive = true;
@@ -432,6 +487,8 @@ export default function EarthGlobe(props: EarthGlobeProps) {
       proceduralClouds.dispose();
       graticuleGeo.dispose();
       atmosphereMaterial.dispose();
+      cityDotGeo.dispose();
+      cityDotMat.dispose();
       arcLines.forEach(({ line }) => {
         line.geometry.dispose();
         (line.material as THREE.Material).dispose();
@@ -443,8 +500,8 @@ export default function EarthGlobe(props: EarthGlobeProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── Frame loop: rotation, voice pulse, clouds ────────────────────────────
-  useFrame((_state, delta) => {
+  // ── Frame loop: rotation, voice pulse, clouds, zoom detail ─────────────
+  useFrame((state, delta) => {
     const group = groupRef.current;
     if (!group) return;
     const dt = Math.min(delta, 0.05);
@@ -507,6 +564,39 @@ export default function EarthGlobe(props: EarthGlobeProps) {
     // Clouds drift slightly faster than the surface.
     if (cloudsRef.current && !motionReduced) {
       cloudsRef.current.rotation.y += dt * 0.008;
+    }
+
+    // Zoom detail: city labels by camera distance + facing hemisphere.
+    const camDist = state.camera.position.length();
+    const wantLabels = shouldShowCityLabels(
+      camDist,
+      showCityLabelsRef.current
+    );
+    if (wantLabels !== showCityLabelsRef.current) {
+      showCityLabelsRef.current = wantLabels;
+      setShowCityLabels(wantLabels);
+    }
+    if (wantLabels) {
+      const camDir = tmpCamDir.current
+        .copy(state.camera.position)
+        .normalize();
+      const facing: string[] = [];
+      for (const { city, pos } of cityPositions) {
+        // World direction: group rotation only (voice pulse scale ~1
+        // does not change direction).
+        const world = tmpCityPos.current
+          .copy(pos)
+          .applyAxisAngle(UP_AXIS, group.rotation.y)
+          .normalize();
+        if (world.dot(camDir) > 0.12) facing.push(city.id);
+      }
+      if (facing.join(",") !== visibleCityIdsRef.current.join(",")) {
+        visibleCityIdsRef.current = facing;
+        setVisibleCityIds(facing);
+      }
+    } else if (visibleCityIdsRef.current.length > 0) {
+      visibleCityIdsRef.current = [];
+      setVisibleCityIds([]);
     }
   });
 
@@ -582,6 +672,43 @@ export default function EarthGlobe(props: EarthGlobeProps) {
           </mesh>
         );
       })}
+
+      {/* City dots — always on the surface (shared geometry/material) */}
+      {cityPositions.map(({ city, pos }) => (
+        <mesh
+          key={`city-dot-${city.id}`}
+          position={[pos.x, pos.y, pos.z]}
+          geometry={cityDotGeo}
+          material={cityDotMat}
+        />
+      ))}
+
+      {/* City labels — only when zoomed in, only for facing cities */}
+      {showCityLabels &&
+        visibleCities.map(({ city, pos }) => (
+          <group
+            key={`city-label-${city.id}`}
+            position={[pos.x, pos.y, pos.z]}
+          >
+            <Html center zIndexRange={[30, 0]} style={{ pointerEvents: "none" }}>
+              <div
+                style={{
+                  fontSize: 10,
+                  fontFamily: "ui-monospace, monospace",
+                  color: "#bae6fd",
+                  background: "rgba(2, 12, 24, 0.6)",
+                  border: "1px solid rgba(125, 211, 252, 0.35)",
+                  borderRadius: 999,
+                  padding: "1px 6px",
+                  whiteSpace: "nowrap",
+                  textShadow: "0 0 6px rgba(56, 189, 248, 0.8)",
+                }}
+              >
+                {city.name}
+              </div>
+            </Html>
+          </group>
+        ))}
 
       {/* Arcs between markers */}
       {arcLines.map(({ arc, line }) => (
