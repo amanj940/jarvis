@@ -19,6 +19,10 @@ import { mic } from "../../lib/voice";
 import LivingEntityCore from "./LivingEntityCore";
 import Settings from "../HUD/Settings";
 import HoloToggle from "../HUD/HoloToggle";
+import HoloYouTubeWindow from "../HUD/HoloYouTubeWindow";
+import HoloBrowserWindow from "../HUD/HoloBrowserWindow";
+import HoloProjectionBeam, { type ProjectionTarget } from "../HUD/HoloProjectionBeam";
+import StatusStrip from "../HUD/StatusStrip";
 import ConfirmModal from "../Tools/ConfirmModal";
 import WorkspacesModal from "../HUD/WorkspacesModal";
 import BootSequence from "../Boot/BootSequence";
@@ -57,6 +61,53 @@ export default function LivingEntityScreen() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [chatCollapsed, setChatCollapsed] = useState(false);
   const [viewingMediaCard, setViewingMediaCard] = useState<MediaCard | null>(null);
+
+  // ── Holographic windows (YouTube / Browser) ─────────────────────────────
+  // Closed by default: holo stays OFF until the user opens a window from the
+  // header (or another part of the app dispatches `jarvis:open-holo-youtube`
+  // / `jarvis:open-holo-browser`, optionally with `{ url }` in detail).
+  // Beam targets feed HoloProjectionBeam so laser rays track open windows.
+  const [youtubeOpen, setYoutubeOpen] = useState(false);
+  const [youtubeUrl, setYoutubeUrl] = useState("");
+  const [browserOpen, setBrowserOpen] = useState(false);
+  const [browserUrl, setBrowserUrl] = useState("");
+  const [beamTargets, setBeamTargets] = useState<ProjectionTarget[]>([]);
+
+  const updateBeamTarget = useCallback((id: string, pos: { x: number; y: number } | null) => {
+    setBeamTargets((prev) =>
+      pos
+        ? [...prev.filter((t) => t.id !== id), { id, x: pos.x, y: pos.y }]
+        : prev.filter((t) => t.id !== id)
+    );
+  }, []);
+
+  // Stable per-window position callbacks: the windows re-report (and reset)
+  // whenever this callback identity changes, so it must not change per render.
+  const handleYoutubePosition = useCallback(
+    (pos: { id: string; x: number; y: number } | null) => updateBeamTarget("holo-youtube", pos),
+    [updateBeamTarget]
+  );
+  const handleBrowserPosition = useCallback(
+    (pos: { id: string; x: number; y: number } | null) => updateBeamTarget("holo-browser", pos),
+    [updateBeamTarget]
+  );
+
+  useEffect(() => {
+    const openYoutube = (e: Event) => {
+      setYoutubeUrl((e as CustomEvent<{ url?: string }>).detail?.url ?? "");
+      setYoutubeOpen(true);
+    };
+    const openBrowser = (e: Event) => {
+      setBrowserUrl((e as CustomEvent<{ url?: string }>).detail?.url ?? "");
+      setBrowserOpen(true);
+    };
+    window.addEventListener("jarvis:open-holo-youtube", openYoutube);
+    window.addEventListener("jarvis:open-holo-browser", openBrowser);
+    return () => {
+      window.removeEventListener("jarvis:open-holo-youtube", openYoutube);
+      window.removeEventListener("jarvis:open-holo-browser", openBrowser);
+    };
+  }, []);
 
   const threeDMedia = useMemo(() => {
     return media.filter((m) => m.kind === "model3d" || m.kind === "galaxy");
@@ -233,6 +284,26 @@ export default function LivingEntityScreen() {
           {/* Holo rings toggle (ambient layer around the globe) */}
           <HoloToggle />
 
+          {/* Holographic YouTube window */}
+          <button
+            onClick={() => setYoutubeOpen(true)}
+            className="px-2.5 py-1 rounded-full border border-slate-800 bg-slate-900/60 text-xs hover:text-cyan-300 hover:border-cyan-500/40 transition flex items-center gap-1.5 cursor-pointer shadow-sm"
+            title="فتح نافذة يوتيوب الهولوغرافية (Open Holo YouTube)"
+          >
+            <span>▶</span>
+            <span className="text-[10px] font-mono text-slate-400">يوتيوب</span>
+          </button>
+
+          {/* Holographic browser window */}
+          <button
+            onClick={() => setBrowserOpen(true)}
+            className="px-2.5 py-1 rounded-full border border-slate-800 bg-slate-900/60 text-xs hover:text-cyan-300 hover:border-cyan-500/40 transition flex items-center gap-1.5 cursor-pointer shadow-sm"
+            title="فتح نافذة المتصفح الهولوغرافية (Open Holo Browser)"
+          >
+            <span>🌐</span>
+            <span className="text-[10px] font-mono text-slate-400">متصفح</span>
+          </button>
+
           {/* Projects workspace browser */}
           <button
             onClick={openProjects}
@@ -322,6 +393,29 @@ export default function LivingEntityScreen() {
           )}
         </div>
       </main>
+
+      {/* ── 2b. HOLOGRAPHIC WINDOWS ───────────────────────────────────────────
+          Floating YouTube / browser windows + projection beams from the core.
+          Windows are closed by default (holo stays OFF until opened above);
+          HoloProjectionBeam renders nothing while no window reports a target. */}
+      <HoloProjectionBeam targets={beamTargets} />
+      {youtubeOpen && (
+        <HoloYouTubeWindow
+          initialUrl={youtubeUrl || undefined}
+          onClose={() => setYoutubeOpen(false)}
+          onPositionChange={handleYoutubePosition}
+        />
+      )}
+      {browserOpen && (
+        <HoloBrowserWindow
+          initialUrl={browserUrl || undefined}
+          onClose={() => setBrowserOpen(false)}
+          onPositionChange={handleBrowserPosition}
+        />
+      )}
+
+      {/* ── 2c. SYSTEM STATUS STRIP — live telemetry footer (28px) ─────────── */}
+      <StatusStrip />
 
       {/* ── 3. PRESERVED OVERLAY MODALS (z-modal: 50) ────────────────────────── */}
       {viewingMediaCard && (
