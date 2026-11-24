@@ -195,3 +195,99 @@ export async function img2img(
   const r = await fetch(`${API_BASE}/api/img2img`, { method: "POST", body: form });
   return r.json();
 }
+
+// ── Settings gap fix (FG-004 / FG-005 / FG-006 / FG-010 / FG-014) ──────────
+// Wrappers for the model-cascade / key-pool / verification endpoints that
+// Settings.tsx used to call inline. NOTE: on the ui-hud-upgrade backend
+// these endpoints do not exist yet (they live only on the audit/fixes
+// branch's routes.py); callers must treat a failed/non-OK response as
+// "endpoint unavailable on this backend build" and degrade gracefully.
+
+export interface CascadeTier {
+  name: string;
+  provider: string;
+  model: string;
+  endpoint?: string;
+  is_local: boolean;
+  timeout: number;
+  ttft_timeout: number;
+}
+
+export interface CascadeInfo {
+  ok: boolean;
+  online: boolean;
+  tiers: CascadeTier[];
+  error?: string;
+}
+
+/** FG-004 — live multi-tier adaptive cascade config (GET /api/models/cascade). */
+export async function getCascadeStatus(): Promise<CascadeInfo> {
+  const r = await fetch(`${API_BASE}/api/models/cascade`);
+  return r.json();
+}
+
+export interface KeyPoolItem {
+  masked: string;
+  key_preview?: string;
+  status: string;
+  cooldown_remaining?: number;
+  failures?: number;
+  successes?: number;
+  last_error?: string | null;
+}
+
+export interface KeysStatus {
+  ok?: boolean;
+  keys: Record<string, KeyPoolItem[]>;
+  api_keys: Record<string, boolean>;
+}
+
+/** FG-005 — masked key pools + per-provider key presence (GET /api/keys). */
+export async function getKeysStatus(): Promise<KeysStatus> {
+  const r = await fetch(`${API_BASE}/api/keys`);
+  return r.json();
+}
+
+export interface VerifiedModel {
+  provider?: string;
+  model_name: string;
+  status: string; // "verified" | "failed" | "untested"
+  latency_ms: number | null;
+  last_tested: string;
+}
+
+/** FG-006 — verified-working models from the backend verifier (GET /api/models/verified). */
+export async function getVerifiedModels(
+  provider = ""
+): Promise<{ ok: boolean; count?: number; models?: VerifiedModel[]; error?: string }> {
+  const q = provider ? `?provider=${encodeURIComponent(provider)}` : "";
+  const r = await fetch(`${API_BASE}/api/models/verified${q}`);
+  return r.json();
+}
+
+/** FG-010 — probe one MCP server (POST /api/mcp/servers/{name}/test). */
+export async function testMcpServer(name: string) {
+  const r = await fetch(`${API_BASE}/api/mcp/servers/${encodeURIComponent(name)}/test`, {
+    method: "POST",
+  });
+  return r.json();
+}
+
+/** FG-010 — fetch one MCP server's logs (GET /api/mcp/servers/{name}/logs). */
+export async function getMcpServerLogs(name: string) {
+  const r = await fetch(`${API_BASE}/api/mcp/servers/${encodeURIComponent(name)}/logs`);
+  return r.json();
+}
+
+/** FG-014 / FG-016 — test one integration (POST /api/integrations/test/{type}). */
+export async function testIntegration(
+  type: "email" | "telegram" | "home_assistant" | "calendar",
+  data?: Record<string, any>
+) {
+  const r = await fetch(`${API_BASE}/api/integrations/test/${type}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data || {}),
+  });
+  return r.json();
+}
