@@ -22,6 +22,14 @@
  * If the globe ever fails to render, the parent falls back to the old
  * particle orb (see `GlobeErrorBoundary` + LivingEntityCore).
  *
+ * Day / night: when the `dayNight` prop is on (default), the globe shows
+ * the real terminator for the current time — the night side is dimmed and,
+ * when the bundled `earth-night.jpg` is present, city lights glow there.
+ * The Sun direction comes from `DayNight.ts` (pure math, no textures) and
+ * is refreshed at most once per second, so there is no per-frame cost and
+ * no React re-render. When the night texture is absent the night side is
+ * just the dimmed day texture, so the procedural fallback keeps working.
+ *
  * Zoom: mouse-wheel zoom is enabled on the OrbitControls in
  * LivingEntityCore (min/max distance in cities.ts). City dots from
  * cities.ts are always on the surface; their text labels appear only when
@@ -33,6 +41,7 @@
  */
 import {
   Component,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -50,6 +59,7 @@ import {
   subscribeGlobeLayers,
 } from "./GlobeLayers";
 import { startIntelLayer } from "./IntelLayers";
+import { DAY_NIGHT_UPDATE_MS, sunDirection } from "./DayNight";
 import {
   WORLD_CITIES,
   shouldShowCityLabels,
@@ -66,7 +76,13 @@ export interface EarthGlobeProps {
   autoRotate?: boolean;
   /** Neon atmosphere glow shell. Default true. */
   atmosphere?: boolean;
-  /** Sun-lit day side + night-lights emissive when a night texture is present. Default true. */
+  /**
+   * Real day/night terminator for the current time. Default true.
+   * The night side is dimmed; when a night texture is present its city
+   * lights glow there. The Sun direction is refreshed at most once per
+   * second (see DAY_NIGHT_UPDATE_MS). When false, the whole globe is lit
+   * as day and no night texture is loaded.
+   */
   dayNight?: boolean;
   /** Rotating procedural cloud shell. Default true. */
   clouds?: boolean;
@@ -267,6 +283,52 @@ const ATMOSPHERE_FRAGMENT = /* glsl */ `
   }
 `;
 
+// ── Day/night terminator (patched into the Phong material) ────────────────
+// The globe's Phong material is patched with onBeforeCompile (see
+// patchDayNightMaterial below): the world-space normal of each fragment is
+// dotted with the real Sun direction, and the day texture is mixed with
+// the night texture across a soft twilight band. The band edges
+// (-0.08 .. 0.22 in dot-product space) MUST match TERMINATOR_NIGHT_EDGE /
+// TERMINATOR_DAY_EDGE in DayNight.ts — the TS helper and the shader share
+// the same terminator. When no night texture is present the night side is
+// just the day texture dimmed to 6%, so the procedural fallback keeps
+// working; when it is present, its city lights also glow via emissive.
+const DAY_NIGHT_VERTEX_COMMON = /* glsl */ `
+varying vec3 vDayNightWorldNormal;
+`;
+const DAY_NIGHT_VERTEX_MAIN = /* glsl */ `
+vDayNightWorldNormal = normalize(mat3(modelMatrix) * normal);
+`;
+const DAY_NIGHT_FRAGMENT_COMMON = /* glsl */ `
+varying vec3 vDayNightWorldNormal;
+uniform vec3 uSunDir;
+uniform sampler2D uNightMap;
+uniform float uHasNightMap;
+uniform float uDayNightEnabled;
+float dayNightSunAmount() {
+  return smoothstep(-0.08, 0.22, dot(normalize(vDayNightWorldNormal), uSunDir));
+}
+`;
+const DAY_NIGHT_MAP_FRAGMENT = /* glsl */ `
+#ifdef USE_MAP
+  vec4 dayNightDayColor = texture2D(map, vMapUv);
+  vec3 dayNightNightColor = dayNightDayColor.rgb * 0.06;
+  if (uHasNightMap > 0.5) {
+    dayNightNightColor = texture2D(uNightMap, vMapUv).rgb * 0.35;
+  }
+  float dayNightMix = uDayNightEnabled > 0.5 ? dayNightSunAmount() : 1.0;
+  diffuseColor *= vec4(mix(dayNightNightColor, dayNightDayColor.rgb, dayNightMix), 1.0);
+#endif
+`;
+const DAY_NIGHT_EMISSIVE_FRAGMENT = /* glsl */ `
+#ifdef USE_MAP
+  if (uDayNightEnabled > 0.5 && uHasNightMap > 0.5) {
+    float dayNightNightAmt = 1.0 - dayNightSunAmount();
+    totalEmissiveRadiance += texture2D(uNightMap, vMapUv).rgb * dayNightNightAmt * 0.9;
+  }
+#endif
+`;
+
 // ── Error boundary (fallback to the old orb on any globe failure) ───────────
 interface BoundaryProps {
   onError?: (error: Error) => void;
@@ -352,6 +414,61 @@ export default function EarthGlobe(props: EarthGlobeProps) {
   const cloudsRef = useRef<THREE.Mesh>(null);
   const speedRef = useRef(rotationSpeed);
   const atmosphereRef = useRef<THREE.ShaderMaterial>(null);
+
+  // ── Day/night: real Sun direction ──────────────────────────────────────
+  // Sun direction at mount (world space); refreshed at most once per
+  // second in the frame loop — no per-frame cost, no React re-renders.
+  const initialSun = useMemo(() => sunDirection(new Date()), []);
+  const dayNightUniforms = useMemo(
+    () => ({
+      uSunDir: {
+        value: new THREE.Vector3(initialSun.x, initialSun.y, initialSun.z),
+      },
+      uNightMap: { value: null as THREE.Texture | null },
+      uHasNightMap: { value: 0 },
+      uDayNightEnabled: { value: dayNight ? 1 : 0 },
+    }),
+    // Captured once at mount; kept in sync by the effects below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  );
+  const sunDirRef = useRef(
+    new THREE.Vector3(initialSun.x, initialSun.y, initialSun.z)
+  );
+  const sunTimerRef = useRef(0);
+  const dirLightRef = useRef<THREE.DirectionalLight>(null);
+
+  // Patch the Phong material with the day/night terminator (see the
+  // DAY_NIGHT_* GLSL above). Stable identity so the program is compiled
+  // once; uniforms are mutated in place, never replaced.
+  const patchDayNightMaterial = useCallback(
+    (shader: THREE.WebGLProgramParametersWithUniforms) => {
+      shader.uniforms.uSunDir = dayNightUniforms.uSunDir;
+      shader.uniforms.uNightMap = dayNightUniforms.uNightMap;
+      shader.uniforms.uHasNightMap = dayNightUniforms.uHasNightMap;
+      shader.uniforms.uDayNightEnabled = dayNightUniforms.uDayNightEnabled;
+      shader.vertexShader = shader.vertexShader
+        .replace(
+          "#include <common>",
+          `#include <common>\n${DAY_NIGHT_VERTEX_COMMON}`
+        )
+        .replace(
+          "#include <begin_vertex>",
+          `#include <begin_vertex>\n${DAY_NIGHT_VERTEX_MAIN}`
+        );
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          "#include <common>",
+          `#include <common>\n${DAY_NIGHT_FRAGMENT_COMMON}`
+        )
+        .replace("#include <map_fragment>", DAY_NIGHT_MAP_FRAGMENT)
+        .replace(
+          "#include <emissivemap_fragment>",
+          DAY_NIGHT_EMISSIVE_FRAGMENT
+        );
+    },
+    [dayNightUniforms]
+  );
 
   // Procedural textures are the always-available fallback.
   const proceduralDay = useMemo(() => makeEarthTexture(), []);
@@ -472,6 +589,20 @@ export default function EarthGlobe(props: EarthGlobeProps) {
     };
   }, [textureUrl, nightTextureUrl, topologyUrl, dayNight]);
 
+  // Day/night uniforms follow the loaded night texture and the prop.
+  // Mutating the uniform values in place — the compiled shader reads
+  // them every frame, so no material recompile is needed.
+  useEffect(() => {
+    dayNightUniforms.uNightMap.value = nightTex;
+    dayNightUniforms.uHasNightMap.value = nightTex ? 1 : 0;
+  }, [nightTex, dayNightUniforms]);
+  useEffect(() => {
+    dayNightUniforms.uDayNightEnabled.value = dayNight ? 1 : 0;
+    if (!dayNight && dirLightRef.current) {
+      dirLightRef.current.position.set(5, 3, 5);
+    }
+  }, [dayNight, dayNightUniforms]);
+
   // Atmosphere shader material (created once, intensity animated in useFrame).
   const atmosphereMaterial = useMemo(
     () =>
@@ -515,6 +646,25 @@ export default function EarthGlobe(props: EarthGlobeProps) {
     const group = groupRef.current;
     if (!group) return;
     const dt = Math.min(delta, 0.05);
+
+    // Day/night: real Sun direction, recomputed at most once per second.
+    // The terminator stays fixed in world space while the globe spins
+    // beneath it (like the real Earth); the directional light follows
+    // the Sun so the Phong lighting matches the shader terminator.
+    if (dayNight) {
+      sunTimerRef.current += dt;
+      if (sunTimerRef.current >= DAY_NIGHT_UPDATE_MS / 1000) {
+        sunTimerRef.current = 0;
+        const s = sunDirection(new Date());
+        sunDirRef.current.set(s.x, s.y, s.z);
+        dayNightUniforms.uSunDir.value.copy(sunDirRef.current);
+        if (dirLightRef.current) {
+          dirLightRef.current.position
+            .copy(sunDirRef.current)
+            .multiplyScalar(5);
+        }
+      }
+    }
 
     let audioAmp = 0;
     let orbState: OrbState = "idle";
@@ -614,9 +764,15 @@ export default function EarthGlobe(props: EarthGlobeProps) {
 
   return (
     <group ref={groupRef}>
-      {/* Natural daylight illumination for photorealistic NASA Earth colors */}
+      {/* Natural daylight illumination for photorealistic NASA Earth colors.
+          The directional light starts at the real Sun direction and follows
+          it (updated in the frame loop); with dayNight off it stays fixed. */}
       <ambientLight intensity={1.1} />
-      <directionalLight position={[5, 3, 5]} intensity={1.4} />
+      <directionalLight
+        ref={dirLightRef}
+        position={[initialSun.x * 5, initialSun.y * 5, initialSun.z * 5]}
+        intensity={1.4}
+      />
 
       {/* Earth sphere in pure, realistic NASA Blue Marble colors */}
       <mesh>
@@ -627,6 +783,7 @@ export default function EarthGlobe(props: EarthGlobeProps) {
           bumpScale={topoTex ? 0.04 : 0}
           shininess={16}
           specular={new THREE.Color("#223344")}
+          onBeforeCompile={patchDayNightMaterial}
         />
       </mesh>
 
