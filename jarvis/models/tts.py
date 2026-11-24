@@ -11,11 +11,37 @@ import os
 import wave
 from pathlib import Path
 
-JARVIS_TTS_VOICE = "en-GB-ThomasNeural"
+# Default Edge-TTS voice when the caller does not request one explicitly.
+# Hamed Neural (Saudi Arabic) — JARVIS speaks Arabic by default.
+# English override: set voice.edge_voice in config.yaml (e.g. en-GB-ThomasNeural)
+# or pass voice= explicitly to POST /api/tts.
+JARVIS_TTS_VOICE = "ar-SA-HamedNeural"
 NVIDIA_WAVEGLOW_URL = (
     "https://catalog.ngc.nvidia.com/orgs/nvidia/teams/tlt-jarvis/"
     "models/speechsynthesis_waveglow?version=deployable_v1.0"
 )
+
+def is_arabic_text(text: str) -> bool:
+    """True when *text* contains Arabic script.
+
+    Used to route speech by language: the local Piper model is
+    English-only, so Arabic text must never be handed to it — it goes
+    to Edge-TTS (ar-SA-HamedNeural) instead.
+    """
+    return any("\u0600" <= ch <= "\u06ff" or "\u0750" <= ch <= "\u077f"
+               or "\u08a0" <= ch <= "\u08ff" or "\ufb50" <= ch <= "\ufdff"
+               or "\ufe70" <= ch <= "\ufeff" for ch in (text or ""))
+
+
+def resolve_edge_voice(requested: str | None, cfg) -> str:
+    """Edge voice for one synthesis: explicit request wins, otherwise the
+    configured default, otherwise the Arabic default constant. The old
+    code let a request-body default of en-GB-ThomasNeural silently win
+    over config.yaml — that is why changing config.yaml alone never
+    changed the spoken voice.
+    """
+    return (requested or "").strip() or (cfg.voice.edge_voice or "").strip() or JARVIS_TTS_VOICE
+
 
 def _piper_available(cfg) -> bool:
     if not _should_try_piper(cfg):
@@ -31,11 +57,17 @@ _piper_voice = None
 _piper_failed = False
 
 
-def _should_try_piper(cfg) -> bool:
+def _should_try_piper(cfg, text: str | None = None) -> bool:
     provider = (cfg.voice.provider or "auto").lower().strip()
     if provider == "piper":
-        return True
-    return provider == "auto" and bool(getattr(cfg.voice, "piper_enabled", False))
+        return True  # explicit override: the user asked for Piper
+    if provider != "auto" or not bool(getattr(cfg.voice, "piper_enabled", False)):
+        return False
+    if text is not None and is_arabic_text(text):
+        # The Piper model is English-only — it cannot speak Arabic text.
+        # Routing Arabic to Edge (ar-SA-HamedNeural) instead.
+        return False
+    return True
 
 
 def _synthesize_with_piper(text: str, cfg) -> bytes:
@@ -91,9 +123,17 @@ def _riva_enabled(cfg) -> bool:
     return provider == "nvidia_riva" or bool(cfg.voice.riva_enabled)
 
 
-def _should_try_riva(cfg) -> bool:
+def _should_try_riva(cfg, text: str | None = None) -> bool:
     provider = (cfg.voice.provider or "auto").lower().strip()
-    return provider == "nvidia_riva" or (provider == "auto" and bool(cfg.voice.riva_enabled))
+    if provider == "nvidia_riva":
+        return True  # explicit override: the user asked for Riva
+    if provider != "auto" or not bool(cfg.voice.riva_enabled):
+        return False
+    if text is not None and is_arabic_text(text):
+        # Riva is configured with an English voice/language (en-US) —
+        # Arabic text goes to Edge (ar-SA-HamedNeural) instead.
+        return False
+    return True
 
 
 # ---------- NVIDIA Riva Cloud TTS ----------
@@ -254,3 +294,5 @@ piper_available = _piper_available
 edge_tts_available = _edge_tts_available
 riva_client_available = _riva_client_available
 riva_enabled = _riva_enabled
+is_arabic_text = is_arabic_text
+resolve_edge_voice = resolve_edge_voice
