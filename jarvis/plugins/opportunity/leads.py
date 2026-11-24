@@ -7,6 +7,22 @@ add returns the existing row with ``created=False`` instead of a duplicate.
 
 Own file (default ``data/opportunity.db``), own tables — never touches
 the memory database.
+
+Scope is enforced HERE, in the store — not only at the tool layer. A
+``LeadsStore`` may be built with an explicit allowlist
+(``allowed_hosts`` and/or ``allowed_sources``); when one is configured,
+``add_lead`` refuses a lead outside it with :class:`OutOfScopeError`,
+``get`` refuses an out-of-scope lead, and ``list_leads`` / ``count``
+only serve in-scope leads. With no allowlist configured (the default)
+the store accepts any ``http(s)`` URL, preserving the scanner's
+behaviour — scan candidates are web-search results from anywhere on the
+web, not just the curated source sites — and the manual add-lead tool.
+``update_status`` re-checks scope except for the ``ignored`` disposition,
+so an out-of-scope lead can still be dismissed.
+
+Store failures (locked/unreadable DB, ...) are normalised through
+:func:`jarvis.plugins.common.errors.normalize_provider_error` into a
+structured :class:`StoreError` instead of a raw ``sqlite3`` traceback.
 """
 from __future__ import annotations
 
@@ -16,6 +32,8 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+from ..common.errors import OutOfScopeError, normalize_provider_error
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS leads (
@@ -68,8 +86,20 @@ def url_hash(url: str) -> str:
 
 
 class LeadsStore:
-    def __init__(self, db_path: str | Path):
+    def __init__(self, db_path: str | Path,
+                 allowed_hosts: list[str] | None = None,
+                 allowed_sources: list[str] | None = None):
         self.path = Path(db_path)
+        # Normalised allowlists; empty/None = unrestricted (default).
+        # Hosts match the host and its subdomains (``upwork.com`` also
+        # covers ``www.upwork.com``). Sources match by exact name,
+        # case-insensitively. When both are set, a lead must satisfy both.
+        self._allowed_hosts = sorted({
+            h.strip().lower().lstrip("*.") for h in (allowed_hosts or [])
+            if h and h.strip()})
+        self._allowed_sources = sorted({
+            s.strip().lower() for s in (allowed_sources or [])
+            if s and s.strip()})
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._conn() as c:
             c.executescript(SCHEMA)
@@ -80,13 +110,48 @@ class LeadsStore:
 
     @contextmanager
     def _conn(self):
-        conn = sqlite3.connect(self.path)
+        try:
+            conn = sqlite3.connect(self.path)
+        except sqlite3.Error as exc:
+            # Structured error, no raw traceback to the caller.
+            raise normalize_provider_error(exc, provider="store") from None
         conn.row_factory = sqlite3.Row
         try:
             yield conn
             conn.commit()
+        except sqlite3.Error as exc:
+            # Structured error, no raw traceback to the caller.
+            raise normalize_provider_error(exc, provider="store") from None
         finally:
             conn.close()
+
+    # ---- scope (store layer) ----
+    def in_scope(self, url: str, source: str = "") -> bool:
+        """True when a lead URL/source is inside this store's allowlist.
+
+        With no allowlist configured every lead is in scope.
+        """
+        if self._allowed_hosts:
+            host = (urlparse((url or "").strip()).netloc or "").lower().split(":")[0]
+            if not host or not any(host == h or host.endswith("." + h)
+                                   for h in self._allowed_hosts):
+                return False
+        if self._allowed_sources:
+            if (source or "").strip().lower() not in self._allowed_sources:
+                return False
+        return True
+
+    def _require_in_scope(self, url: str, source: str = "") -> None:
+        """Raise :class:`OutOfScopeError` unless the lead is in scope."""
+        if not self.in_scope(url, source):
+            raise OutOfScopeError(
+                f"lead {url!r} is outside the configured lead scope",
+                target=url,
+                details={"allowed_hosts": list(self._allowed_hosts),
+                         "allowed_sources": list(self._allowed_sources)})
+
+    def _row_in_scope(self, row: dict) -> bool:
+        return self.in_scope(row["url"], row.get("source") or "")
 
     def add_lead(self, url: str, title: str, source: str = "", kind: str = "",
                  score: float = 0.0, notes: str = "",
@@ -107,6 +172,7 @@ class LeadsStore:
         if lat is not None and not (-90.0 <= float(lat) <= 90.0
                                     and -180.0 <= float(lon) <= 180.0):
             raise ValueError("lat must be -90..90 and lon -180..180")
+        self._require_in_scope(url, source)
         h = url_hash(url)
         now = time.time()
         with self._conn() as c:
@@ -123,10 +189,18 @@ class LeadsStore:
             row = c.execute("SELECT * FROM leads WHERE id=?", (cur.lastrowid,)).fetchone()
             return dict(row), True
 
-    def get(self, lead_id: int) -> dict | None:
+    def _get_row(self, lead_id: int) -> dict | None:
+        """Raw row fetch without the scope check (internal use)."""
         with self._conn() as c:
             row = c.execute("SELECT * FROM leads WHERE id=?", (lead_id,)).fetchone()
             return dict(row) if row else None
+
+    def get(self, lead_id: int) -> dict | None:
+        row = self._get_row(lead_id)
+        if row is None:
+            return None
+        self._require_in_scope(row["url"], row.get("source") or "")
+        return row
 
     def list_leads(self, status: str | None = None, kind: str | None = None,
                    limit: int = 50) -> list[dict]:
@@ -140,10 +214,13 @@ class LeadsStore:
             args.append(kind)
         if clauses:
             q += " WHERE " + " AND ".join(clauses)
-        q += " ORDER BY score DESC, created_at DESC LIMIT ?"
-        args.append(max(1, limit))
+        q += " ORDER BY score DESC, created_at DESC"
         with self._conn() as c:
-            return [dict(r) for r in c.execute(q, args).fetchall()]
+            rows = [dict(r) for r in c.execute(q, args).fetchall()]
+        # Filter before applying the limit so an out-of-scope row never
+        # eats a slot meant for an in-scope lead.
+        rows = [r for r in rows if self._row_in_scope(r)]
+        return rows[:max(1, limit)]
 
     def top_leads(self, limit: int = 10, status: str = "new") -> list[dict]:
         return self.list_leads(status=status, limit=limit)
@@ -151,13 +228,20 @@ class LeadsStore:
     def update_status(self, lead_id: int, status: str) -> dict | None:
         if status not in VALID_STATUSES:
             raise ValueError(f"invalid status {status!r}; use one of {sorted(VALID_STATUSES)}")
+        row = self._get_row(lead_id)
+        if row is None:
+            return None
+        if status != "ignored":
+            self._require_in_scope(row["url"], row.get("source") or "")
         with self._conn() as c:
             c.execute("UPDATE leads SET status=?, updated_at=? WHERE id=?",
                       (status, time.time(), lead_id))
-        return self.get(lead_id)
+        return self._get_row(lead_id)
 
     def count(self, status: str | None = None) -> int:
-        with self._conn() as c:
-            if status:
-                return c.execute("SELECT COUNT(*) FROM leads WHERE status=?", (status,)).fetchone()[0]
-            return c.execute("SELECT COUNT(*) FROM leads").fetchone()[0]
+        if not (self._allowed_hosts or self._allowed_sources):
+            with self._conn() as c:
+                if status:
+                    return c.execute("SELECT COUNT(*) FROM leads WHERE status=?", (status,)).fetchone()[0]
+                return c.execute("SELECT COUNT(*) FROM leads").fetchone()[0]
+        return len(self.list_leads(status=status, limit=10 ** 9))
