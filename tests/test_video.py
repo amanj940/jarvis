@@ -299,3 +299,237 @@ def test_load_all_discovers_video(tmp_path):
     names = [p.name for p in registry.plugins()]
     assert "video" in names
     assert registry.get("video_render_draft") is not None
+
+
+# ---- slice 2: subtitles, transitions, thumbnail ----
+
+from jarvis.plugins.video.assemble import (  # noqa: E402
+    build_xfade_filter,
+    effective_transition,
+)
+from jarvis.plugins.video.subtitles import (  # noqa: E402
+    build_srt,
+    contains_arabic,
+    format_srt_time,
+)
+
+
+def test_format_srt_time():
+    assert format_srt_time(0) == "00:00:00,000"
+    assert format_srt_time(61.5) == "00:01:01,500"
+    assert format_srt_time(3661.234) == "01:01:01,234"
+    assert format_srt_time(-3) == "00:00:00,000"
+
+
+def test_contains_arabic():
+    assert contains_arabic("مرحبا بكم في جارفيس")
+    assert contains_arabic("hello مرحبا")
+    assert not contains_arabic("hello world")
+    assert not contains_arabic("")
+
+
+def test_build_srt_arabic_timings():
+    srt = build_srt([
+        (0.0, 4.0, "مرحبا بكم في جارفيس"),
+        (3.5, 6.5, "وداعا الآن"),
+    ])
+    assert srt.startswith("1\n00:00:00,000 --> 00:00:04,000\nمرحبا بكم في جارفيس\n")
+    assert "2\n00:00:03,500 --> 00:00:06,500\nوداعا الآن" in srt
+
+
+def test_build_srt_skips_empty_and_stretches_short():
+    srt = build_srt([
+        (0.0, 2.0, "  "),
+        (2.0, 2.0, "Real line"),
+        (5.0, 9.0, "Last"),
+    ])
+    assert "Real line" in srt and "Last" in srt
+    # Empty entry skipped, numbering stays sequential; zero-length stretched.
+    assert srt.startswith("1\n00:00:02,000 --> 00:00:02,500\nReal line\n")
+    assert "\n2\n00:00:05,000 --> 00:00:09,000\nLast" in srt
+
+
+def test_build_xfade_filter_offsets():
+    filt, v_out, a_out = build_xfade_filter([4.0, 3.0, 5.0], 0.5)
+    assert v_out == "vout" and a_out == "aout"
+    # First join at 4.0 - 0.5; second at (4.0 + 3.0 - 0.5) - 0.5 = 6.0.
+    assert "xfade=transition=fade:duration=0.500:offset=3.500" in filt
+    assert "xfade=transition=fade:duration=0.500:offset=6.000" in filt
+    assert filt.count("acrossfade=d=0.500") == 2
+    assert filt.count("fps=30") == 3  # every input normalised
+
+
+def test_build_xfade_filter_clamps_transition():
+    filt, _, _ = build_xfade_filter([2.0, 2.0], 2.0)
+    # 2.0s requested but half the shortest scene is 1.0s.
+    assert "duration=1.000:offset=1.000" in filt
+    assert effective_transition([2.0, 2.0], 2.0) == 1.0
+    assert effective_transition([4.0, 3.0], 0.5) == 0.5
+    assert effective_transition([4.0], 0.5) == 0.0
+    assert effective_transition([4.0, 3.0], 0) == 0.0
+    with pytest.raises(ValueError):
+        build_xfade_filter([4.0], 0.5)
+
+
+def _arabic_project(tmp_path):
+    store = VideoStore(tmp_path / "video.db")
+    project = store.create_project("Demo", topic="space")
+    img = tmp_path / "still.png"
+    img.write_bytes(TINY_PNG)
+    store.add_scene(project["id"], "Intro", "مرحبا بكم في جارفيس", 4.0,
+                    image_path=str(img))
+    store.add_scene(project["id"], "Outro", "وداعا الآن", 3.0)
+    return store, project
+
+
+def _recording_fake_run_ffmpeg(calls):
+    def fake_run_ffmpeg(args, timeout=600):
+        calls.append(list(args))
+        Path(args[-1]).parent.mkdir(parents=True, exist_ok=True)
+        Path(args[-1]).write_bytes(b"fake-mp4")
+    return fake_run_ffmpeg
+
+
+def test_render_with_subtitles_and_transitions_mocked(tmp_path, monkeypatch):
+    """Arabic script: subtitles auto-on, xfade on, SRT + mov_text + cover."""
+    monkeypatch.setattr(assemble, "ffmpeg_available", lambda: True)
+
+    async def fake_narration(text, out_path, cfg, voice=None):
+        out = Path(out_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"fake-mp3")
+        return out
+
+    monkeypatch.setattr(assemble, "synthesize_narration", fake_narration)
+    monkeypatch.setattr(assemble, "_audio_duration", lambda p: None)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(assemble, "_run_ffmpeg",
+                        _recording_fake_run_ffmpeg(calls))
+
+    store, project = _arabic_project(tmp_path)
+    result = asyncio.run(
+        assemble.render_draft(project["id"], store, _FakeCfg(tmp_path)))
+
+    assert result["ok"] is True
+    assert result["subtitles"] is True
+    assert result["transitions"] is True
+    assert result["transition_seconds"] == 0.5
+    # 4.0 + 3.0 - 0.5 crossfade.
+    assert result["duration_seconds"] == 6.5
+    # SRT sidecar: second cue starts at 3.5 (pulled earlier by the fade).
+    srt_path = Path(result["subtitle_path"])
+    assert srt_path.name == "draft.srt" and srt_path.exists()
+    srt = srt_path.read_text(encoding="utf-8")
+    assert "00:00:00,000 --> 00:00:04,000" in srt
+    assert "00:00:03,500 --> 00:00:06,500" in srt
+    assert "مرحبا بكم في جارفيس" in srt
+    # The xfade filter and the mov_text mux both ran.
+    joined = "\n".join(" ".join(c) for c in calls)
+    assert "xfade=transition=fade" in joined
+    assert "mov_text" in joined
+    # Thumbnail from the middle of the first scene.
+    assert Path(result["thumbnail_path"]).name == "cover.jpg"
+    assert Path(result["thumbnail_path"]).exists()
+    assert store.get_project(project["id"])["status"] == "done"
+
+
+def test_render_transitions_off_uses_concat(tmp_path, monkeypatch):
+    monkeypatch.setattr(assemble, "ffmpeg_available", lambda: True)
+
+    async def fake_narration(text, out_path, cfg, voice=None):
+        out = Path(out_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"fake-mp3")
+        return out
+
+    monkeypatch.setattr(assemble, "synthesize_narration", fake_narration)
+    monkeypatch.setattr(assemble, "_audio_duration", lambda p: None)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(assemble, "_run_ffmpeg",
+                        _recording_fake_run_ffmpeg(calls))
+
+    store, project = _project_with_scenes(tmp_path)
+    result = asyncio.run(assemble.render_draft(
+        project["id"], store, _FakeCfg(tmp_path), transitions=False))
+
+    assert result["ok"] is True
+    assert result["transitions"] is False
+    assert result["duration_seconds"] == 7.0  # 4.0 + 3.0, no fade overlap
+    assert result["subtitles"] is False  # English narration: auto-off
+    assert result["subtitle_path"] == ""
+    joined = "\n".join(" ".join(c) for c in calls)
+    assert "xfade" not in joined and "mov_text" not in joined
+    assert "concat" in joined  # the old stream-copy path
+    assert Path(result["thumbnail_path"]).exists()
+
+
+def test_render_subtitles_off_no_srt(tmp_path, monkeypatch):
+    monkeypatch.setattr(assemble, "ffmpeg_available", lambda: True)
+
+    async def fake_narration(text, out_path, cfg, voice=None):
+        out = Path(out_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"fake-mp3")
+        return out
+
+    monkeypatch.setattr(assemble, "synthesize_narration", fake_narration)
+    monkeypatch.setattr(assemble, "_audio_duration", lambda p: None)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(assemble, "_run_ffmpeg",
+                        _recording_fake_run_ffmpeg(calls))
+
+    store, project = _arabic_project(tmp_path)
+    result = asyncio.run(assemble.render_draft(
+        project["id"], store, _FakeCfg(tmp_path), subtitles=False))
+
+    assert result["ok"] is True
+    assert result["subtitles"] is False
+    assert result["subtitle_path"] == ""
+    assert not list(Path(result["output"]).parent.glob("*.srt"))
+    joined = "\n".join(" ".join(c) for c in calls)
+    assert "mov_text" not in joined
+    assert "xfade" in joined  # transitions still on by default
+
+
+@pytest.mark.skipif(not assemble.ffmpeg_available(),
+                    reason="ffmpeg not installed")
+def test_render_real_e2e_slice2(tmp_path, monkeypatch):
+    """Real ffmpeg end-to-end: 2 silent scenes, xfade + SRT + cover.jpg.
+
+    Narration is forced to fail (no network in tests) so the scenes
+    render silent; the SRT is still built from the narration text.
+    """
+    import subprocess
+
+    async def failing_narration(text, out_path, cfg, voice=None):
+        raise assemble.RenderError("Edge-TTS narration failed: no internet")
+
+    monkeypatch.setattr(assemble, "synthesize_narration", failing_narration)
+
+    store = VideoStore(tmp_path / "video.db")
+    project = store.create_project("Demo", topic="space")
+    img = tmp_path / "still.png"
+    img.write_bytes(TINY_PNG)
+    store.add_scene(project["id"], "Intro", "مرحبا بكم في جارفيس", 2.0,
+                    image_path=str(img))
+    store.add_scene(project["id"], "Outro", "وداعا الآن", 2.0)
+
+    result = asyncio.run(
+        assemble.render_draft(project["id"], store, _FakeCfg(tmp_path)))
+
+    assert result["ok"] is True
+    assert result["silent_scenes"] == ["Intro", "Outro"]
+    assert result["subtitles"] is True and result["transitions"] is True
+    assert result["duration_seconds"] == pytest.approx(3.5, abs=0.3)
+    out = Path(result["output"])
+    assert out.exists() and out.stat().st_size > 0
+    srt = Path(result["subtitle_path"])
+    assert srt.exists()
+    assert "مرحبا بكم في جارفيس" in srt.read_text(encoding="utf-8")
+    cover = Path(result["thumbnail_path"])
+    assert cover.exists() and cover.read_bytes()[:2] == b"\xff\xd8"
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries",
+         "stream=codec_type,codec_name", "-of", "csv=p=0", str(out)],
+        capture_output=True, text=True, timeout=30)
+    assert "subtitle" in probe.stdout and "mov_text" in probe.stdout
