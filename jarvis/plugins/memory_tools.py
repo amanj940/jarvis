@@ -24,7 +24,13 @@ CLUSTER_COLOR: dict[str, str] = {
 
 
 def register(registry):
-    memory = registry.services["memory"]
+    memory = registry.services.get("memory")
+    if memory is None:
+        import logging
+        logging.getLogger("jarvis.plugins").warning(
+            "memory_tools: 'memory' service unavailable — skipping registration"
+        )
+        return
 
     @tool(
         name="remember",
@@ -340,10 +346,107 @@ def register(registry):
         }
         return MEDIA_PREFIX + json.dumps(payload, ensure_ascii=False)
 
+    # ── Universal Dynamic Database Tools (build a field for anything) ───────────
+    @tool(
+        name="db_store",
+        description="Store or update a structured record with any fields/attributes in the local database.",
+        permission=Permission.SAFE,
+        parameters={
+            "type": "object",
+            "properties": {
+                "collection": {"type": "string", "description": "Category or collection name (e.g. 'devices', 'projects', 'user_info', 'credentials_hints')"},
+                "key": {"type": "string", "description": "Unique key or name of the entity"},
+                "data": {"type": "object", "description": "Arbitrary fields and values as a JSON object"},
+                "tags": {"type": "array", "items": {"type": "string"}, "description": "Optional search tags"},
+            },
+            "required": ["collection", "key", "data"],
+        },
+    )
+    def db_store(collection: str, key: str, data: dict, tags: list[str] | None = None) -> str:
+        res = memory.store_entity(collection, key, data, tags)
+        return f"Stored {collection}:{key} with fields: {list(res.keys())}"
+
+    @tool(
+        name="db_set_field",
+        description="Add or update a single field/attribute inside an entity in the local database (build a field for anything).",
+        permission=Permission.SAFE,
+        parameters={
+            "type": "object",
+            "properties": {
+                "collection": {"type": "string", "description": "Collection name (e.g. 'user_info', 'devices', 'servers')"},
+                "key": {"type": "string", "description": "Entity key/name"},
+                "field_name": {"type": "string", "description": "The attribute or field name to add/update"},
+                "field_value": {"description": "The value for this field (string, number, list, or object)"},
+            },
+            "required": ["collection", "key", "field_name", "field_value"],
+        },
+    )
+    def db_set_field(collection: str, key: str, field_name: str, field_value) -> str:
+        res = memory.set_entity_field(collection, key, field_name, field_value)
+        return f"Updated {collection}:{key}.{field_name} = {field_value!r} (Entity now has {len(res)} fields)"
+
+    @tool(
+        name="db_get",
+        description="Retrieve an entity and all its stored fields from the local database.",
+        permission=Permission.SAFE,
+        parameters={
+            "type": "object",
+            "properties": {
+                "collection": {"type": "string", "description": "Collection name"},
+                "key": {"type": "string", "description": "Entity key/name"},
+            },
+            "required": ["collection", "key"],
+        },
+    )
+    def db_get(collection: str, key: str) -> str:
+        ent = memory.get_entity(collection, key)
+        if ent is None:
+            return f"Not found: {collection}:{key}"
+        return json.dumps(ent, ensure_ascii=False, indent=2)
+
+    @tool(
+        name="db_query",
+        description="Search across all entities and fields stored in the local database.",
+        permission=Permission.SAFE,
+        parameters={
+            "type": "object",
+            "properties": {
+                "collection": {"type": "string", "default": "", "description": "Filter by collection name (optional)"},
+                "query": {"type": "string", "default": "", "description": "Search keyword matching key or field values"},
+                "tag": {"type": "string", "default": "", "description": "Filter by tag"},
+            },
+        },
+    )
+    def db_query(collection: str = "", query: str = "", tag: str = "") -> str:
+        hits = memory.query_entities(collection, query, tag)
+        if not hits:
+            return "No matching entities found in database."
+        lines = [f"Found {len(hits)} matching record(s):"]
+        for h in hits:
+            fields_summary = ", ".join(f"{k}={v!r}" for k, v in list(h["fields"].items())[:4])
+            lines.append(f"• [{h['collection']}] {h['key']}: {fields_summary}")
+        return "\n".join(lines)
+
+    @tool(
+        name="db_list_collections",
+        description="List all custom collections and entity counts in the local database.",
+        permission=Permission.SAFE,
+        parameters={"type": "object", "properties": {}},
+    )
+    def db_list_collections() -> str:
+        cols = memory.list_collections()
+        if not cols:
+            return "No custom collections in database yet."
+        lines = ["Database Collections:"]
+        for c in cols:
+            sample = f" (e.g. {', '.join(c['sample_keys'])})" if c.get("sample_keys") else ""
+            lines.append(f"• {c['collection']}: {c['count']} items{sample}")
+        return "\n".join(lines)
+
     registry.add_pending("memory_tools")
     registry.register_plugin(PluginInfo(
         name="memory_tools",
-        description="Read/write the local memory store: prefs, notes, fixes, paths, commands.",
+        description="Read/write local memory: prefs, notes, fixes, paths, and dynamic schema-less universal database.",
         permissions_needed=[Permission.SAFE],
     ))
 
