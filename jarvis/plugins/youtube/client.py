@@ -24,7 +24,6 @@ log = logging.getLogger("jarvis.youtube")
 BASE_URL = "https://www.googleapis.com/youtube/v3"
 SEARCH_URL = f"{BASE_URL}/search"
 CHANNELS_URL = f"{BASE_URL}/channels"
-VIDEOS_URL = f"{BASE_URL}/videos"
 
 
 class YouTubeNotConfigured(RuntimeError):
@@ -177,17 +176,3 @@ class YouTubeClient:
             "part": "snippet,statistics", "id": cid,
         })
         return parse_channel_stats(payload)
-
-    async def video_stats(self, video_ids: list[str]) -> list[dict]:
-        if not video_ids:
-            return []
-        payload = await self._get(VIDEOS_URL, {
-            "part": "snippet,statistics", "id": ",".join(video_ids[:50]),
-        })
-        return parse_video_stats(payload)
-
-    async def channel_videos(self, channel_id: str | None = None, max_results: int = 10) -> list[dict]:
-        cid = channel_id or self.channel_id
-        if not cid:
-            raise ValueError("channel_id is required (arg or YOUTUBE_CHANNEL_ID)")
-        return await self.search_videos("", max_results=max_results, channel_id=cid, order="date")

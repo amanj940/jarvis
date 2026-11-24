@@ -7,7 +7,6 @@ that publishes a video anywhere.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 
 from ...core.permissions import Permission
@@ -30,7 +29,6 @@ def register(registry):
     toggle = cfg.plugins.get("video")
     if toggle is not None and not toggle.enabled:
         return
-    registry.services["video_store"] = _store(cfg)
 
     @tool(
         name="video_create_project",

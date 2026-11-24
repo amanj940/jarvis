@@ -9,8 +9,10 @@ applies, or spends anything.
 ### Setup (required for any API call)
 
 1. Google Cloud Console → create a project → enable **YouTube Data API v3**.
-2. Create an **API key** (not OAuth — analytics/uploads need OAuth, which
-   is deliberately *not* wired here).
+2. Create an **API key** (not OAuth — the data tools below use the
+   key; OAuth helpers for a future upload flow live in
+   `jarvis/plugins/youtube/oauth.py`, see `docs/youtube-oauth.md`,
+   and no upload call exists yet).
 3. Set environment variables (never put keys in code or in `config.yaml`):
 
 ```bat
@@ -132,10 +134,12 @@ review, never something Jarvis acts on.
 The fetcher is injected — a callable returning candidate dicts
 (`url`, `title`, `source`, `kind`, optional `description`), sync or
 async — so tests (and any future source API) can still inject a fake.
-**With no fetcher the scan is a documented no-op**
-(`scanned: 0`) rather than pretending to work; the manual
-`opportunity_scan` tool still runs without a fetcher, so it stays a
-no-op until it is wired the same way. The handler's result is the
+The manual `opportunity_scan` tool runs with the production fetcher
+wired at registration (`tools.py`: `build_web_search_fetcher(registry)`),
+so it scans for real; it only returns `scanned: 0` when `web_search`
+itself is unavailable. Calling `run_opportunity_scan` directly with no
+fetcher is still a documented no-op (`scanned: 0`) rather than
+pretending to work. The handler's result is the
 morning alert text (`format_alerts`), surfaced like any other task
 result.
 
@@ -146,13 +150,15 @@ result.
 | `opportunity_add_lead` | CAUTION | Save one lead (deduped, scored) |
 | `opportunity_list_leads` | SAFE | List leads, highest score first |
 | `opportunity_top_leads` | SAFE | Top new leads as an alert summary |
-| `opportunity_scan` | CAUTION | Run one scan now (no fetcher → no-op) |
+| `opportunity_scan` | CAUTION | Run one scan now (production `web_search` fetcher wired at registration) |
 | `opportunity_sources` | SAFE | List curated sources |
 
 ### Safety
 
 - No tool submits a bug-bounty report, applies to a job, contacts
   anyone, or spends money. Leads are local rows a human reviews.
-- Upload/publish paths do not exist in either package; adding one
-  needs explicit human approval and a DANGEROUS permission, by design.
+- Upload/publish paths do not exist in either package (OAuth
+  credentials for a future upload flow are prepared in
+  `docs/youtube-oauth.md`); adding one needs explicit human approval
+  and a DANGEROUS permission, by design.
 

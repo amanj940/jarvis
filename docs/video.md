@@ -101,4 +101,7 @@ video:
   work; keep renders short while the laptop is the limit. Transitions
   (slice 2) cost one extra encode pass but no extra RAM.
 - Narration is Edge-TTS (cloud, needs internet). Offline Piper narration
-  is not wired here — Piper's model is English-only.
+  is not wired here — the renderer calls Edge-TTS directly
+  (`assemble.py`). An Arabic Piper model exists for chat speech
+  (`docs/voice-offline.md`, `ar_JO-kareem-medium`), but the video
+  renderer does not use it.
