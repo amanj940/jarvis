@@ -16,7 +16,14 @@ import {
   toggleMcpServer,
   deleteMcpServer,
   getHealth,
+  getCascadeStatus,
+  getKeysStatus,
+  getVerifiedModels,
+  testMcpServer,
+  getMcpServerLogs,
+  testIntegration,
 } from "../../lib/api";
+import type { CascadeInfo, VerifiedModel } from "../../lib/api";
 import { resetAllLayouts } from "./Floating";
 
 const APP_VERSION = "0.2.0";
@@ -36,6 +43,9 @@ const PROVIDER_ENDPOINTS: Record<string, string | null> = {
   mistral: "https://api.mistral.ai/v1",
   cerebras: "https://api.cerebras.ai/v1",
   anthropic: "https://api.anthropic.com",
+  // FG-001: 9Router / OmniRoute local aggregator (Tier 3) — matches the
+  // audit/fixes backend providers_catalog.py default_base_url exactly.
+  omniroute: "http://localhost:20128/v1",
   openai_compatible: null,
 };
 
@@ -54,6 +64,8 @@ const PREDEFINED_MODELS: Record<string, string[]> = {
   mistral: ["mistral-large-latest", "mistral-small-latest", "codestral-latest"],
   cerebras: ["llama-3.3-70b", "llama3.1-70b", "llama3.1-8b"],
   anthropic: ["claude-3-5-sonnet-latest", "claude-3-5-haiku-latest", "claude-3-opus-latest"],
+  // FG-001: models served by the local 9Router proxy (audit/fixes brain.py Tier 3).
+  omniroute: ["groq/openai/gpt-oss-120b", "gem", "gemini/gemini-3.8-flash"],
   openai_compatible: ["qwen2.5:1.5b", "qwen2.5:3b", "llama3.1:8b"],
 };
 
@@ -99,6 +111,8 @@ const PROVIDER_INFO: Record<string, ProviderInfo> = {
   ollama_cloud:      { name: "Ollama Cloud",     icon: "☁️",  desc: "Ollama hosted cloud models",    kind: "cloud",  keyUrl: "https://ollama.com/settings/keys" },
   // ── Local Providers ─────────────────────────────────────────────────────────
   openai_compatible: { name: "Ollama (Local)",   icon: "🦙",  desc: "Local models via Ollama",        kind: "local" },
+  // FG-001
+  omniroute:         { name: "9Router Proxy",   icon: "🔀",  desc: "Local free-tier aggregator",       kind: "local" },
 };
 
 // ── Toast notification ──────────────────────────────────────────────────────
@@ -180,6 +194,7 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
 
   // ── Bulk API Keys Import state ──────────────────────────────────────────────
   const bulkFileInputRef = useRef<HTMLInputElement>(null);
+  const settingsImportRef = useRef<HTMLInputElement>(null);
   const [bulkImporting, setBulkImporting] = useState(false);
   const [showBulkModal, setShowBulkModal] = useState(false);
   const [bulkText, setBulkText] = useState("");
@@ -214,11 +229,17 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
   const [toolsLoading, setToolsLoading] = useState(false);
   const [toolSearch, setToolSearch] = useState("");
   const [selectedPlugin, setSelectedPlugin] = useState<string>("all");
+  // FG-008: permission filter for the tools list.
+  const [selectedPermission, setSelectedPermission] = useState<"all" | "safe" | "caution" | "danger">("all");
   const [expandedTool, setExpandedTool] = useState<string | null>(null);
 
   // Plugins list & toggling
   const [pluginsMap, setPluginsMap] = useState<Record<string, boolean>>({});
   const [pluginToggleLoading, setPluginToggleLoading] = useState<string | null>(null);
+  // FG-009: expanded plugin (shows the tools that depend on it) + inline
+  // warning shown before disabling a plugin that still provides tools.
+  const [expandedPlugin, setExpandedPlugin] = useState<string | null>(null);
+  const [pluginDisableWarn, setPluginDisableWarn] = useState<string | null>(null);
 
   // ── MCP State ─────────────────────────────────────────────────────────────
   interface McpServerItem {
@@ -234,6 +255,10 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
   }
   const [mcpServers, setMcpServers] = useState<McpServerItem[]>([]);
   const [mcpLoading, setMcpLoading] = useState(false);
+  // FG-010: per-server logs panel state.
+  const [serverLogs, setServerLogs] = useState<Record<string, string>>({});
+  const [expandedLogsServer, setExpandedLogsServer] = useState<string | null>(null);
+  const [logsUnavailable, setLogsUnavailable] = useState<Record<string, boolean>>({});
   const [showAddMcpModal, setShowAddMcpModal] = useState(false);
   const [newMcpName, setNewMcpName] = useState("");
   const [newMcpCommand, setNewMcpCommand] = useState("");
@@ -270,6 +295,25 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
     calendar: { ics_url: "", enabled: false },
     email: { smtp_host: "", smtp_port: 587, username: "", enabled: false },
     telegram: { bot_token: "", chat_id: "", enabled: false },
+  });
+
+  // FG-014 / FG-016: per-integration test results + localStorage-backed
+  // test history (last 10 runs per integration).
+  interface IntegrationTestResult {
+    loading: boolean;
+    success?: boolean;
+    msg?: string;
+    latency?: number;
+  }
+  const [integrationTesting, setIntegrationTesting] = useState<Record<string, IntegrationTestResult>>({});
+  const [integrationHistory, setIntegrationHistory] = useState<
+    Record<string, Array<{ ok: boolean; msg: string; latency?: number; at: string }>>
+  >(() => {
+    try {
+      return JSON.parse(localStorage.getItem("jarvis_integration_test_history") || "{}");
+    } catch {
+      return {};
+    }
   });
 
   useEffect(() => {
@@ -329,6 +373,17 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
   const [enableFallback, setEnableFallback] = useState(false);
   const [fallbackProvider, setFallbackProvider] = useState("gemini");
   const [fallbackModel, setFallbackModel] = useState("gemini-2.0-flash");
+
+  // ── Cascade / verification status (FG-002 / FG-006) ─────────────────────
+  // Served by GET /api/models/cascade and GET /api/models/verified on the
+  // audit/fixes backend. Those endpoints do not exist on the ui-hud-upgrade
+  // backend yet, so both stay empty and the UI shows an honest
+  // "unavailable" state instead of fake data.
+  const [cascadeInfo, setCascadeInfo] = useState<CascadeInfo | null>(null);
+  const [cascadeError, setCascadeError] = useState<string | null>(null);
+  const [verifiedModels, setVerifiedModels] = useState<
+    Record<string, { status: string; latency_ms: number | null; last_tested: string }>
+  >({});
 
   // Provider config modal state (Providers tab)
   const [providerConfigModal, setProviderConfigModal] = useState<string | null>(null);
@@ -423,6 +478,37 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
       .finally(() => setMcpLoading(false));
   }, []);
 
+  // FG-002: fetch the live 4-tier cascade configuration.
+  const fetchCascadeInfo = useCallback(async () => {
+    try {
+      const d = await getCascadeStatus();
+      if (d && d.ok && Array.isArray(d.tiers)) {
+        setCascadeInfo(d);
+        setCascadeError(null);
+      } else {
+        setCascadeError(d?.error || "Cascade endpoint unavailable on this backend build");
+      }
+    } catch (e: any) {
+      setCascadeError(e?.message || "Cascade endpoint unreachable");
+    }
+  }, []);
+
+  // FG-006: fetch verified-model statuses (verified / failed / untested).
+  const fetchVerifiedModels = useCallback(async () => {
+    try {
+      const d = await getVerifiedModels();
+      if (d && d.ok && Array.isArray(d.models)) {
+        const map: Record<string, { status: string; latency_ms: number | null; last_tested: string }> = {};
+        d.models.forEach((m: VerifiedModel) => {
+          map[m.model_name] = { status: m.status, latency_ms: m.latency_ms, last_tested: m.last_tested };
+        });
+        setVerifiedModels(map);
+      }
+    } catch {
+      // Endpoint missing on this backend build — badges stay "?" (untested).
+    }
+  }, []);
+
   // ── Load config on mount ─────────────────────────────────────────────────
   useEffect(() => {
     fetch("/api/config")
@@ -468,9 +554,8 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
           setPluginsMap(j.plugins);
         }
 
-        // Fetch key pools
-        fetch("/api/keys")
-          .then((r) => r.json())
+        // Fetch key pools (FG-005: via the api.ts wrapper)
+        getKeysStatus()
           .then((kd) => {
             if (kd.keys) setKeyPools(kd.keys);
             if (kd.api_keys) setApiKeyStatus(kd.api_keys);
@@ -483,7 +568,7 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
         const hasKey = j.api_keys?.[loadedProv] ?? false;
         setAvailableModels(PREDEFINED_MODELS[loadedProv] ?? []);
         setModelsFetched(false);
-        if (loadedProv === "openai_compatible" && loadedEp) {
+        if ((loadedProv === "openai_compatible" || loadedProv === "omniroute") && loadedEp) {
           fetchModels(loadedProv, "", loadedEp);
         } else if (hasKey) {
           fetchModels(loadedProv, "", loadedEp);
@@ -503,7 +588,9 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
       .catch(() => undefined);
 
     loadMcp();
-  }, [fetchModels, loadMcp, pushToast]);
+    fetchCascadeInfo();
+    fetchVerifiedModels();
+  }, [fetchModels, loadMcp, pushToast, fetchCascadeInfo, fetchVerifiedModels]);
 
   // ── Save all settings ────────────────────────────────────────────────────
   const saveConfig = async () => {
@@ -638,6 +725,35 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
     }
   };
 
+  // FG-010: fetch one MCP server's logs (GET /api/mcp/servers/{name}/logs).
+  // The endpoint does not exist on the ui-hud-upgrade backend yet, so a
+  // failed fetch surfaces as an honest "unavailable" panel, not fake logs.
+  const fetchServerLogs = async (serverName: string) => {
+    try {
+      const d = await getMcpServerLogs(serverName);
+      if (d && d.ok && d.logs) {
+        setServerLogs((prev) => ({ ...prev, [serverName]: d.logs }));
+        setLogsUnavailable((prev) => ({ ...prev, [serverName]: false }));
+      } else {
+        setLogsUnavailable((prev) => ({ ...prev, [serverName]: true }));
+      }
+    } catch {
+      setLogsUnavailable((prev) => ({ ...prev, [serverName]: true }));
+    }
+  };
+
+  // FG-010: probe one MCP server (POST /api/mcp/servers/{name}/test).
+  const handleTestMcpServer = async (name: string) => {
+    pushToast(`Testing MCP server ${name}…`, "ok");
+    try {
+      const d = await testMcpServer(name);
+      if (d && d.ok) pushToast(`✓ ${name}: ${d.message || "reachable"}`);
+      else pushToast(`MCP test failed: ${d?.error || "endpoint unavailable on this backend build"}`, "error");
+    } catch (e: any) {
+      pushToast(`MCP test failed: ${e?.message || "endpoint unavailable"}`, "error");
+    }
+  };
+
   const handleAddMcp = async () => {
     if (!newMcpName.trim() || !newMcpCommand.trim()) {
       pushToast("Name and command are required", "error");
@@ -689,6 +805,90 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
     setShowAddMcpModal(true);
   };
 
+  // FG-014 / FG-016: test one integration and record the run in history.
+  const handleTestIntegration = async (type: "email" | "telegram" | "home_assistant" | "calendar") => {
+    setIntegrationTesting((prev) => ({ ...prev, [type]: { loading: true } }));
+    const started = Date.now();
+    const record = (ok: boolean, msg: string, latency: number) => {
+      const entry = { ok, msg, latency, at: new Date().toISOString() };
+      setIntegrationTesting((prev) => ({ ...prev, [type]: { loading: false, success: ok, msg, latency } }));
+      setIntegrationHistory((prev) => {
+        const next = { ...prev, [type]: [entry, ...(prev[type] || [])].slice(0, 10) };
+        try {
+          localStorage.setItem("jarvis_integration_test_history", JSON.stringify(next));
+        } catch {
+          // storage unavailable — history stays in memory only
+        }
+        return next;
+      });
+      return entry;
+    };
+    try {
+      const payload = (integrations as any)[type] || {};
+      const res = await testIntegration(type, payload);
+      const latency = Date.now() - started;
+      if (res && res.ok) {
+        record(true, res.message || "OK", latency);
+        pushToast(`✓ ${type}: ${res.message || "OK"} (${latency}ms)`);
+      } else {
+        record(false, res?.error || "endpoint unavailable on this backend build", latency);
+        pushToast(`${type} test failed: ${res?.error || "endpoint unavailable"}`, "error");
+      }
+    } catch (err: any) {
+      const latency = Date.now() - started;
+      record(false, err?.message || "Failed", latency);
+      pushToast(`Failed to test ${type}: ${err?.message || "Error"}`, "error");
+    }
+  };
+
+  // FG-016: test every integration in turn.
+  const handleTestAllIntegrations = async () => {
+    for (const t of ["email", "telegram", "home_assistant", "calendar"] as const) {
+      await handleTestIntegration(t);
+    }
+  };
+
+  // FG-014: per-integration test button + last-5 history.
+  const renderIntegrationTest = (type: "email" | "telegram" | "home_assistant" | "calendar") => {
+    const res = integrationTesting[type];
+    const hist = integrationHistory[type] || [];
+    return (
+      <div className="pt-3 border-t border-slate-800 space-y-2">
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => handleTestIntegration(type)}
+            disabled={res?.loading}
+            className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-lg text-xs transition disabled:opacity-40"
+          >
+            {res?.loading ? "⏳ Testing…" : "🔬 Test connection"}
+          </button>
+          {res && !res.loading && (
+            <span className={`text-xs font-mono ${res.success ? "text-emerald-400" : "text-rose-400"}`}>
+              {res.success
+                ? `✓ ${res.msg || "OK"}${res.latency !== undefined ? ` (${res.latency}ms)` : ""}`
+                : `✗ ${res.msg || "failed"}`}
+            </span>
+          )}
+        </div>
+        {hist.length > 0 && (
+          <div className="space-y-1">
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-mono">
+              Test history (last {Math.min(hist.length, 5)})
+            </div>
+            {hist.slice(0, 5).map((h, i) => (
+              <div key={i} className="flex items-center gap-2 text-[11px] font-mono text-slate-400">
+                <span className={h.ok ? "text-emerald-400" : "text-rose-400"}>{h.ok ? "✓" : "✗"}</span>
+                <span className="text-slate-500">{new Date(h.at).toLocaleString()}</span>
+                <span className="truncate">{h.msg || (h.ok ? "OK" : "failed")}</span>
+                {h.latency !== undefined && <span className="text-slate-500">{h.latency}ms</span>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   // ── Provider change: update models + endpoint hint ───────────────────────
   const onProviderChange = useCallback((prov: string) => {
     setProvider(prov);
@@ -707,7 +907,8 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
     setApiKeyInput("");
     const key = (apiKeys[prov] || "").trim();
     const finalEp = ep || endpoint;
-    if (prov === "openai_compatible") {
+    // omniroute is a local keyless proxy like Ollama — fetch with no key.
+    if (prov === "openai_compatible" || prov === "omniroute") {
       if (finalEp) fetchModels(prov, "", finalEp);
     } else if (key || apiKeyStatus[prov]) {
       fetchModels(prov, key, finalEp);
@@ -745,10 +946,10 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
   }, [endpoint, provider, fetchModels]);
 
   // ── Multi-Key Management Helpers ──────────────────────────────────────────
+  // FG-005: key pools via the api.ts wrapper (was an inline fetch).
   const refreshKeyPools = useCallback(async () => {
     try {
-      const r = await fetch("/api/keys");
-      const d = await r.json();
+      const d = await getKeysStatus();
       if (d.keys) setKeyPools(d.keys);
       if (d.api_keys) setApiKeyStatus(d.api_keys);
     } catch {
@@ -1106,6 +1307,116 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
     pushToast("Chat history exported");
   };
 
+  // ── Settings export / import / reset (FG-019 / FG-020) ──────────────────
+  // Purely local: no backend call. Export uses the same payload shape as
+  // saveConfig; import applies only known fields and marks the form dirty
+  // so the user reviews before pressing Save.
+  const exportSettings = () => {
+    const data = {
+      model: {
+        provider,
+        model,
+        endpoint,
+        max_tokens: maxTokens,
+        temperature,
+        fallback_provider: enableFallback ? fallbackProvider : null,
+        fallback_model: enableFallback ? fallbackModel : null,
+      },
+      voice: {
+        provider: voiceProvider,
+        edge_voice: edgeVoice,
+        edge_rate: edgeRate,
+        pyttsx3_volume: ttsVolume,
+      },
+      ui: {
+        theme,
+        emoji: showEmojis,
+        show_status_bar: showStatusBar,
+        refresh_interval_ms: refreshInterval,
+      },
+      permissions: { mode: permMode },
+      integrations,
+      plugins: pluginsMap,
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `jarvis-settings-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    pushToast("Settings exported");
+  };
+
+  const handleImportSettings = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const j = JSON.parse(String(reader.result));
+        if (j.model) {
+          if (j.model.provider) setProvider(j.model.provider);
+          if (j.model.model) setModel(j.model.model);
+          if (j.model.endpoint) setEndpoint(j.model.endpoint);
+          if (typeof j.model.max_tokens === "number") setMaxTokens(j.model.max_tokens);
+          if (typeof j.model.temperature === "number") setTemperature(j.model.temperature);
+          if (j.model.fallback_provider) { setFallbackProvider(j.model.fallback_provider); setEnableFallback(true); }
+          if (j.model.fallback_model) setFallbackModel(j.model.fallback_model);
+        }
+        if (j.voice) {
+          if (j.voice.provider) setVoiceProvider(j.voice.provider);
+          if (j.voice.edge_voice) setEdgeVoice(j.voice.edge_voice);
+          if (j.voice.edge_rate) setEdgeRate(j.voice.edge_rate);
+          if (typeof j.voice.pyttsx3_volume === "number") setTtsVolume(j.voice.pyttsx3_volume);
+        }
+        if (j.ui) {
+          if (j.ui.theme) setTheme(j.ui.theme);
+          if (typeof j.ui.emoji === "boolean") setShowEmojis(j.ui.emoji);
+          if (typeof j.ui.show_status_bar === "boolean") setShowStatusBar(j.ui.show_status_bar);
+          if (typeof j.ui.refresh_interval_ms === "number") setRefreshInterval(j.ui.refresh_interval_ms);
+        }
+        if (j.permissions?.mode) setPermMode(j.permissions.mode);
+        if (j.integrations) setIntegrations((prev) => ({ ...prev, ...j.integrations }));
+        if (j.plugins) setPluginsMap(j.plugins);
+        setDirty(true);
+        pushToast("Settings imported — review and press Save to apply");
+      } catch {
+        pushToast("Invalid settings file", "error");
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  };
+
+  const resetSettingsToDefaults = () => {
+    setProvider("openai_compatible");
+    setModel("qwen2.5:1.5b");
+    setEndpoint("http://localhost:11434/v1");
+    setMaxTokens(1024);
+    setTemperature(0.3);
+    setEnableFallback(false);
+    setFallbackProvider("gemini");
+    setFallbackModel("gemini-2.0-flash");
+    setVoiceProvider("auto");
+    setEdgeVoice("ar-SA-HamedNeural");
+    setEdgeRate("-6%");
+    setTtsVolume(0.9);
+    setTheme("jarvis");
+    setShowEmojis(true);
+    setShowStatusBar(true);
+    setRefreshInterval(1500);
+    setPermMode("confirm");
+    setIntegrations({
+      home_assistant: { url: "", token: "", enabled: false },
+      calendar: { ics_url: "", enabled: false },
+      email: { smtp_host: "", smtp_port: 587, username: "", enabled: false },
+      telegram: { bot_token: "", chat_id: "", enabled: false },
+    });
+    setDirty(true);
+    pushToast("Settings reset to defaults — press Save to apply");
+  };
+
   // ── Confirm dialog state ──────────────────────────────────────────────────
   const [confirmDialog, setConfirmDialog] = useState<{ text: string; onYes: () => void } | null>(null);
 
@@ -1169,12 +1480,14 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
           const q = toolSearch.toLowerCase().trim();
           const filtered = toolsList.filter((t) => {
             const matchPlugin = selectedPlugin === "all" || t.plugin === selectedPlugin;
+            // FG-008: permission filter.
+            const matchPerm = selectedPermission === "all" || t.permission === selectedPermission;
             const matchSearch =
               !q ||
               t.name.toLowerCase().includes(q) ||
               (t.description || "").toLowerCase().includes(q) ||
               (t.plugin || "").toLowerCase().includes(q);
-            return matchPlugin && matchSearch;
+            return matchPlugin && matchPerm && matchSearch;
           });
 
           return (
@@ -1290,14 +1603,23 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                             <span className="font-mono text-xs font-semibold text-white block">
                               {pName.replace(/_/g, " ")}
                             </span>
-                            <span className="text-[10px] text-slate-400 font-mono">
-                              {toolCount ? `${toolCount} tools` : "plugin"}
-                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setExpandedPlugin(expandedPlugin === pName ? null : pName)}
+                              className="text-[10px] text-slate-400 font-mono hover:text-cyan-300"
+                              title="Show the tools that depend on this plugin (FG-009)"
+                            >
+                              {toolCount ? `${toolCount} tools ${expandedPlugin === pName ? "▾" : "▸"}` : "plugin"}
+                            </button>
                           </div>
                           <button
                             type="button"
                             disabled={isBusy}
-                            onClick={() => handleTogglePlugin(pName, isEnabled)}
+                            onClick={() => {
+                              // FG-009: warn before disabling a plugin that still provides tools.
+                              if (isEnabled && toolCount > 0) setPluginDisableWarn(pName);
+                              else handleTogglePlugin(pName, isEnabled);
+                            }}
                             className={`relative w-10 h-5 rounded-full transition-colors flex-shrink-0 ${
                               isEnabled ? "bg-cyan-500" : "bg-slate-700"
                             } ${isBusy ? "opacity-50" : ""}`}
@@ -1309,6 +1631,44 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                             />
                           </button>
                         </div>
+                        {/* FG-009: tools that depend on this plugin */}
+                        {expandedPlugin === pName && (
+                          <div className="mt-1 pt-2 border-t border-slate-800">
+                            {toolCount === 0 ? (
+                              <p className="text-[10px] text-slate-500 font-mono">No tools registered under this plugin.</p>
+                            ) : (
+                              <div className="flex flex-wrap gap-1">
+                                {toolsList.filter((t) => t.plugin === pName).map((t) => (
+                                  <span key={t.name} className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-cyan-300/90">
+                                    {t.name}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        {/* FG-009: confirm before disabling a plugin with live tools */}
+                        {pluginDisableWarn === pName && (
+                          <div className="mt-2 p-2.5 bg-amber-950/50 border border-amber-600/40 rounded-lg space-y-2">
+                            <p className="text-[11px] text-amber-200 leading-relaxed">
+                              Disable &apos;{pName.replace(/_/g, " ")}&apos;? It provides {toolCount} tool(s) — they will stop working until it is re-enabled.
+                            </p>
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => { setPluginDisableWarn(null); handleTogglePlugin(pName, isEnabled); }}
+                                className="px-2.5 py-1 text-[11px] bg-amber-600 hover:bg-amber-500 text-white rounded font-semibold transition"
+                              >
+                                Disable anyway
+                              </button>
+                              <button
+                                onClick={() => setPluginDisableWarn(null)}
+                                className="px-2.5 py-1 text-[11px] bg-slate-700 hover:bg-slate-600 text-slate-200 rounded transition"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -1380,6 +1740,27 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                     );
                   })}
                 </div>
+
+                {/* Permission filter pills (FG-008) */}
+                <div className="flex items-center gap-1.5 flex-wrap overflow-x-auto pb-1">
+                  {(["all", "safe", "caution", "danger"] as const).map((perm) => {
+                    const count = perm === "all" ? toolsList.length : toolsList.filter((t) => t.permission === perm).length;
+                    return (
+                      <button
+                        key={perm}
+                        onClick={() => setSelectedPermission(perm)}
+                        className={`text-xs px-3 py-1.5 rounded-lg font-mono transition flex items-center gap-1.5 ${
+                          selectedPermission === perm
+                            ? "bg-cyan-500/20 text-cyan-300 border border-cyan-500/40"
+                            : "bg-slate-800/60 text-slate-400 hover:bg-slate-800 hover:text-slate-200 border border-slate-700/40"
+                        }`}
+                      >
+                        <span>{perm === "all" ? "All permissions" : perm}</span>
+                        <span className="text-[10px] opacity-60">({count})</span>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
 
               {/* Tools List */}
@@ -1436,9 +1817,18 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                               <span>{isExpanded ? "▾ Hide schema" : "▸ View parameters"}</span>
                             </button>
                             {isExpanded && (
-                              <pre className="mt-2 p-2.5 bg-slate-950/80 border border-slate-800 rounded-lg text-[10.5px] font-mono text-slate-300 overflow-x-auto max-h-48">
-                                {JSON.stringify(t.parameters, null, 2)}
-                              </pre>
+                              <div className="mt-2">
+                                {/* FG-007: typed parameter rows (name, type, required, description, default, enum). */}
+                                <ToolParams parameters={t.parameters} />
+                                <details className="mt-2">
+                                  <summary className="text-[10px] font-mono text-slate-500 hover:text-slate-300 cursor-pointer">
+                                    Raw JSON schema
+                                  </summary>
+                                  <pre className="mt-1.5 p-2.5 bg-slate-950/80 border border-slate-800 rounded-lg text-[10.5px] font-mono text-slate-300 overflow-x-auto max-h-48">
+                                    {JSON.stringify(t.parameters, null, 2)}
+                                  </pre>
+                                </details>
+                              </div>
                             )}
                           </div>
                         )}
@@ -1538,21 +1928,48 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                       <option value="mistral">Mistral</option>
                       <option value="cerebras">Cerebras</option>
                       <option value="anthropic">Anthropic (Claude)</option>
+                      <option value="omniroute">9Router Proxy — Local Free Aggregator</option>
                     </select>
                   </div>
 
                   {/* Key status banner */}
-                  {provider !== "openai_compatible" && (
+                  {provider !== "openai_compatible" && provider !== "omniroute" && (
                     <div className="flex items-center justify-between bg-slate-900/60 border border-slate-700/50 rounded-xl px-4 py-3">
                       <div className="flex items-center gap-2 text-sm">
                         {(keyPools[provider] || []).length > 0 || apiKeyStatus[provider] ? (
                           <>
                             <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block" />
-                            <span className="text-emerald-300 font-medium">
-                              {(keyPools[provider] || []).length > 1
-                                ? `${(keyPools[provider] || []).length} keys — ⚡ Auto-Rotation active`
-                                : "API key configured"}
-                            </span>
+                            <div className="flex flex-col">
+                              <span className="text-emerald-300 font-medium">
+                                {(keyPools[provider] || []).length > 1
+                                  ? `${(keyPools[provider] || []).length} keys — ⚡ Auto-Rotation active`
+                                  : "API key configured"}
+                              </span>
+                              {/* FG-003: active key in the pool (masked) + health. */}
+                              {(keyPools[provider] || []).length > 0 && (
+                                <span className="text-[10px] text-slate-400 font-mono">
+                                  Active: {keyPools[provider]?.[0]?.masked || "Loading..."}
+                                  <span className="ml-2 text-slate-500">
+                                    1 of {(keyPools[provider] || []).length} in pool
+                                  </span>
+                                  {keyPools[provider]?.[0]?.successes ? (
+                                    <span className="ml-2 text-emerald-400">
+                                      ✓ {keyPools[provider][0].successes} successes
+                                    </span>
+                                  ) : null}
+                                  {keyPools[provider]?.[0]?.failures ? (
+                                    <span className="ml-2 text-rose-400">
+                                      ✗ {keyPools[provider][0].failures} failures
+                                    </span>
+                                  ) : null}
+                                  {keyPools[provider]?.[0]?.cooldown_remaining && keyPools[provider][0].cooldown_remaining > 0 ? (
+                                    <span className="ml-2 text-amber-400">
+                                      ⏱ {Math.ceil(keyPools[provider][0].cooldown_remaining)}s cooldown
+                                    </span>
+                                  ) : null}
+                                </span>
+                              )}
+                            </div>
                           </>
                         ) : (
                           <>
@@ -1604,13 +2021,29 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                       >
                         {modelsFetched ? (
                           <optgroup label={`✓ Verified Live Models (${availableModels.length})`}>
-                            {availableModels.map((m) => <option key={m} value={m}>{m}</option>)}
+                            {availableModels.map((m) => {
+                              // FG-006: verification badge + latency from /api/models/verified.
+                              const verified = verifiedModels[m];
+                              const statusIcon = verified?.status === "verified" ? "✓" : verified?.status === "failed" ? "✗" : "?";
+                              const latencyInfo = verified?.latency_ms ? ` (${verified.latency_ms}ms)` : "";
+                              return (
+                                <option key={m} value={m}>
+                                  {statusIcon} {m}{latencyInfo}
+                                </option>
+                              );
+                            })}
                           </optgroup>
                         ) : (
                           <optgroup label="Suggested Models">
-                            {(availableModels.length > 0 ? availableModels : PREDEFINED_MODELS[provider] || []).map((m) => (
-                              <option key={m} value={m}>{m}</option>
-                            ))}
+                            {(availableModels.length > 0 ? availableModels : PREDEFINED_MODELS[provider] || []).map((m) => {
+                              const verified = verifiedModels[m];
+                              const statusIcon = verified?.status === "verified" ? "✓" : verified?.status === "failed" ? "✗" : "";
+                              return (
+                                <option key={m} value={m}>
+                                  {statusIcon} {m}
+                                </option>
+                              );
+                            })}
                           </optgroup>
                         )}
                         <option value="__custom__">⚙ Enter custom model name…</option>
@@ -1695,6 +2128,7 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                             <option value="mistral">Mistral</option>
                             <option value="cerebras">Cerebras</option>
                             <option value="anthropic">Anthropic</option>
+                            <option value="omniroute">9Router Proxy (Local)</option>
                           </select>
                         </div>
                         <div className="space-y-1.5">
@@ -1704,6 +2138,59 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                             placeholder="e.g. gemini-2.0-flash"
                             className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm font-mono" />
                         </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Cascade Status — real 4-tier display (FG-002) */}
+                  <div className="space-y-3 bg-slate-900/60 border border-purple-500/30 rounded-xl p-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <label className="text-sm font-semibold text-slate-200 flex items-center gap-2">
+                          🌊 Multi-Tier Cascade Status
+                        </label>
+                        <p className="text-xs text-slate-400">
+                          Live adaptive routing — Tier 0 → Tier 3 fallback chain (GET /api/models/cascade)
+                        </p>
+                      </div>
+                      <button
+                        onClick={fetchCascadeInfo}
+                        className="text-xs px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded border border-slate-700 transition"
+                      >
+                        ↻ Refresh
+                      </button>
+                    </div>
+                    {cascadeInfo && cascadeInfo.tiers.length > 0 ? (
+                      <div className="space-y-2 pt-2 border-t border-slate-800">
+                        {cascadeInfo.tiers.map((tier, idx) => (
+                          <div key={idx} className="flex items-center justify-between bg-slate-950/40 border border-slate-800 rounded-lg px-3 py-2">
+                            <div className="flex items-center gap-3 min-w-0">
+                              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-400 shrink-0">
+                                Tier {idx}
+                              </span>
+                              <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded shrink-0 ${
+                                tier.is_local ? "bg-amber-500/15 text-amber-400" : "bg-cyan-500/10 text-cyan-400"
+                              }`}>
+                                {tier.is_local ? "local" : "cloud"}
+                              </span>
+                              <span className="text-xs font-mono text-slate-300 truncate">
+                                {tier.provider}/{tier.model}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className="text-[10px] text-slate-500 font-mono">
+                                {tier.timeout}s
+                              </span>
+                              <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="text-xs text-slate-500 italic pt-2 border-t border-slate-800">
+                        {cascadeError
+                          ? `Cascade status unavailable: ${cascadeError}. The /api/models/cascade endpoint is not exposed by the backend on this branch yet.`
+                          : "Cascade status not loaded. Click Refresh to fetch the live configuration."}
                       </div>
                     )}
                   </div>
@@ -2311,10 +2798,11 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
               )}
               {mcpServers.map((srv) => (
                 <div key={srv.name}
-                  className={`bg-slate-800/50 border rounded-xl p-4 flex items-center gap-4 transition ${
+                  className={`bg-slate-800/50 border rounded-xl p-4 transition ${
                     srv.enabled ? "border-purple-500/30" : "border-slate-700/50 opacity-70"
                   }`}
                 >
+                  <div className="flex items-center gap-4">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="font-mono font-semibold text-sm text-white">{srv.name}</span>
@@ -2348,10 +2836,43 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                       }`} />
                     </button>
                     <button
+                      onClick={() => handleTestMcpServer(srv.name)}
+                      className="px-2 py-1 text-xs bg-slate-900/80 hover:bg-slate-700/80 text-emerald-300 border border-emerald-800/50 rounded transition font-mono"
+                      title="Probe this MCP server (FG-010)"
+                    >
+                      🧪 Test
+                    </button>
+                    <button
+                      onClick={() => {
+                        setExpandedLogsServer(expandedLogsServer === srv.name ? null : srv.name);
+                        if (expandedLogsServer !== srv.name) fetchServerLogs(srv.name);
+                      }}
+                      className="px-2 py-1 text-xs bg-slate-900/80 hover:bg-slate-700/80 text-amber-300 border border-amber-800/50 rounded transition font-mono"
+                      title="View this server's logs (FG-010)"
+                    >
+                      📋 Logs
+                    </button>
+                    <button
                       onClick={() => handleDeleteMcp(srv.name)}
                       className="px-2 py-1 text-xs bg-red-950/60 hover:bg-red-900/80 text-red-300 rounded border border-red-800/50 transition"
                     >✕</button>
                   </div>
+                  </div>
+                  {expandedLogsServer === srv.name && (
+                    <div className="mt-3 pt-3 border-t border-slate-800">
+                      {serverLogs[srv.name] ? (
+                        <pre className="text-[11px] font-mono text-slate-300 bg-slate-950/80 border border-slate-800 rounded-lg p-3 max-h-56 overflow-y-auto whitespace-pre-wrap">
+                          {serverLogs[srv.name]}
+                        </pre>
+                      ) : (
+                        <p className="text-xs text-slate-500 italic">
+                          {logsUnavailable[srv.name]
+                            ? `Server logs are not available: GET /api/mcp/servers/${srv.name}/logs is not exposed by the backend on this branch yet.`
+                            : "Loading logs…"}
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -2410,11 +2931,20 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
         {/* ══ Integrations ═════════════════════════════════════════════════ */}
         {activeTab === "integrations" && (
           <div className="max-w-5xl mx-auto space-y-6">
-            <div className="border-b border-slate-700/50 pb-5">
-              <h2 className="text-2xl font-bold text-white flex items-center gap-3">
-                <span>🌐</span> Integrations
-              </h2>
-              <p className="text-sm text-slate-400 mt-1">Connect JARVIS to external systems. Changes take effect after save.</p>
+            <div className="border-b border-slate-700/50 pb-5 flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-2xl font-bold text-white flex items-center gap-3">
+                  <span>🌐</span> Integrations
+                </h2>
+                <p className="text-sm text-slate-400 mt-1">Connect JARVIS to external systems. Changes take effect after save.</p>
+              </div>
+              <button
+                onClick={handleTestAllIntegrations}
+                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded-lg border border-slate-700 flex items-center gap-1.5 transition shrink-0"
+                title="Test every integration in turn (FG-016)"
+              >
+                🔬 Test All
+              </button>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
@@ -2444,6 +2974,7 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                       className="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm" />
                   </div>
                 </div>
+                {renderIntegrationTest("home_assistant")}
               </div>
 
               {/* Calendar */}
@@ -2463,6 +2994,7 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                     placeholder="https://calendar.google.com/...ics"
                     className="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm" />
                 </div>
+                {renderIntegrationTest("calendar")}
               </div>
 
               {/* Email SMTP */}
@@ -2501,6 +3033,7 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                       placeholder="App password" className="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm" />
                   </div>
                 </div>
+                {renderIntegrationTest("email")}
               </div>
 
               {/* Telegram */}
@@ -2527,6 +3060,7 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                       placeholder="-1001234567890" className="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm font-mono" />
                   </div>
                 </div>
+                {renderIntegrationTest("telegram")}
               </div>
             </div>
 
@@ -2728,6 +3262,24 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                       className="w-full px-4 py-3 bg-slate-700 text-white rounded-lg hover:bg-slate-600 transition text-left">Export chat history (JSON)</button>
                     <button onClick={() => pushToast("ZIP export coming soon")}
                       className="w-full px-4 py-3 bg-slate-700 text-white rounded-lg hover:bg-slate-600 transition text-left">Export all data (ZIP)</button>
+                  </div>
+                  <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-6 space-y-4">
+                    <h3 className="text-lg font-semibold text-cyan-400 mb-3">Settings Backup</h3>
+                    <p className="text-xs text-slate-400">Export the current settings to a file, or import a previously exported file. Import only fills the form — nothing is saved until you press Save.</p>
+                    <button onClick={exportSettings}
+                      className="w-full px-4 py-3 bg-slate-700 text-white rounded-lg hover:bg-slate-600 transition text-left">Export settings (JSON)</button>
+                    <input
+                      type="file"
+                      ref={settingsImportRef}
+                      accept=".json,application/json"
+                      className="hidden"
+                      onChange={handleImportSettings}
+                    />
+                    <button onClick={() => settingsImportRef.current?.click()}
+                      className="w-full px-4 py-3 bg-slate-700 text-white rounded-lg hover:bg-slate-600 transition text-left">Import settings (JSON)</button>
+                    <button
+                      onClick={() => setConfirmDialog({ text: "Reset all settings to their defaults? Your API keys stay in the backend .env, but the form values will be replaced. Press Save afterwards to apply.", onYes: () => { resetSettingsToDefaults(); setConfirmDialog(null); } })}
+                      className="w-full px-4 py-3 bg-slate-700 text-white rounded-lg hover:bg-slate-600 transition text-left">Reset settings to defaults</button>
                   </div>
                   <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-6 space-y-4">
                     <h3 className="text-lg font-semibold text-red-400 mb-3">Danger Zone</h3>
@@ -3145,6 +3697,64 @@ function Row({ label, value }: { label: string; value: string }) {
     <div className="flex justify-between">
       <span className="text-slate-400">{label}</span>
       <span className="text-white">{value}</span>
+    </div>
+  );
+}
+
+// FG-007: typed parameter rows for a tool. The backend returns a JSON
+// schema ({ type: "object", properties: {...}, required: [...] }), so the
+// rows are built from `properties` with required/type/description/default/
+// enum hints — not from raw JSON. Unknown shapes fall back to plain entries.
+function ToolParams({ parameters }: { parameters: any }) {
+  const props =
+    parameters?.properties && typeof parameters.properties === "object"
+      ? parameters.properties
+      : null;
+  const required: string[] = Array.isArray(parameters?.required) ? parameters.required : [];
+  if (!props) {
+    const entries =
+      parameters && typeof parameters === "object" ? Object.entries(parameters) : [];
+    if (entries.length === 0) {
+      return <div className="text-[11px] text-slate-500">No parameters.</div>;
+    }
+    return (
+      <div className="p-2.5 bg-slate-950/80 border border-slate-800 rounded-lg text-[10.5px] space-y-1.5 max-h-48 overflow-y-auto">
+        {entries.map(([key, param]: [string, any]) => (
+          <div key={key} className="flex items-start gap-2">
+            <span className="text-cyan-400 font-mono shrink-0">{key}:</span>
+            <span className="text-slate-300 break-words">
+              {typeof param === "object" ? JSON.stringify(param) : String(param)}
+            </span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+  const keys = Object.keys(props);
+  if (keys.length === 0) {
+    return <div className="text-[11px] text-slate-500">No parameters.</div>;
+  }
+  return (
+    <div className="p-2.5 bg-slate-950/80 border border-slate-800 rounded-lg text-[10.5px] space-y-1.5 max-h-48 overflow-y-auto">
+      {keys.map((key) => {
+        const p = props[key] || {};
+        const isReq = required.includes(key);
+        return (
+          <div key={key} className="flex items-start gap-2">
+            <span className="text-cyan-400 font-mono shrink-0">
+              {key}
+              {isReq ? " *" : ""}:
+            </span>
+            <span className="text-slate-300 break-words">
+              {p.type || "any"}
+              {isReq ? " — required" : " — optional"}
+              {p.description ? ` — ${p.description}` : ""}
+              {p.default !== undefined ? ` (default: ${JSON.stringify(p.default)})` : ""}
+              {Array.isArray(p.enum) ? ` [${p.enum.join(", ")}]` : ""}
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }
