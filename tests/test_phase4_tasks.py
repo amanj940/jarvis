@@ -200,10 +200,15 @@ class SttConfigTests(unittest.TestCase):
         self.assertEqual(_filter_whisper_hallucination("اشتركوا في القناة"), "")
         self.assertEqual(_filter_whisper_hallucination("ابحث عن الأخبار"), "ابحث عن الأخبار")
 
-    def test_english_persona_still_default(self):
+    def test_arabic_persona_now_default(self):
+        # 2026-11-24: the user chose Arabic as the default voice/persona.
+        # (Was test_english_persona_still_default in Phase 4, when English
+        # was the default and Arabic was opt-in.)
         cfg = load_config()
-        self.assertEqual(cfg.A.persona_file, "persona/jarvis.md")
+        self.assertEqual(cfg.A.persona_file, "persona/jarvis-ar.md")
         self.assertTrue(Path(cfg.project_root, "persona/jarvis-ar.md").is_file())
+        # English persona still ships, so switching back stays one line.
+        self.assertTrue(Path(cfg.project_root, "persona/jarvis.md").is_file())
 
 
 # ----------------------------------------------------------------------
