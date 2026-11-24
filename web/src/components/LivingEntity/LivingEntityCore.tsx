@@ -259,12 +259,30 @@ export default function LivingEntityCore() {
     downPosRef.current = { x: e.clientX, y: e.clientY };
   };
 
+  // Timestamp (ms) of the last globe-marker click, for the click-vs-mic
+  // guard in handleEntityClick below.
+  const markerClickAtRef = useRef(0);
+
+  // A marker click fires its R3F onClick — and this callback — before the
+  // native click bubbles up to the container, so record it here. Markers
+  // are 3D meshes, not DOM elements, so no DOM check can spot them.
+  const handleMarkerClick = useCallback(() => {
+    markerClickAtRef.current = Date.now();
+  }, []);
+
   const handleEntityClick = (e: React.MouseEvent) => {
     // Click on entity toggles microphone — but a drag (rotate) or a
     // scroll-zoom gesture must NOT toggle it. Ignore clicks whose pointer
     // travelled more than a few pixels since pointer-down.
     const d = downPosRef.current;
     if (d && Math.hypot(e.clientX - d.x, e.clientY - d.y) > 6) return;
+    // A click on a globe marker (or any interactive globe overlay element)
+    // must NOT toggle the mic. HTML overlays (e.g. marker tooltips) are
+    // caught by the data-attribute check; 3D mesh markers are caught by
+    // the timestamp set in handleMarkerClick just before this bubbles up.
+    const target = e.target as HTMLElement | null;
+    if (target?.closest?.("[data-globe-marker], [data-globe-interactive]")) return;
+    if (Date.now() - markerClickAtRef.current < 300) return;
     window.dispatchEvent(new CustomEvent("jarvis:toggle-mic"));
   };
 
@@ -298,7 +316,7 @@ export default function LivingEntityCore() {
             <VolumetricMorphMesh reducedMotion={reducedMotion} />
           ) : (
             <GlobeErrorBoundary onError={() => setGlobeFailed(true)}>
-              <EarthGlobe reducedMotion={reducedMotion} />
+              <EarthGlobe reducedMotion={reducedMotion} onMarkerClick={handleMarkerClick} />
             </GlobeErrorBoundary>
           )}
           {/* Ambient holo shapes around the globe (not the fallback orb —
