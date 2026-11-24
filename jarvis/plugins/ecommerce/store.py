@@ -65,6 +65,8 @@ CREATE TABLE IF NOT EXISTS ecommerce_sync_state (
     resource TEXT NOT NULL,
     last_synced_at REAL NOT NULL,
     last_count INTEGER NOT NULL DEFAULT 0,
+    last_errors INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (shop, resource)
 );
 CREATE INDEX IF NOT EXISTS idx_products_shop ON ecommerce_products(shop);
@@ -79,11 +81,24 @@ CREATE INDEX IF NOT EXISTS idx_customers_email ON ecommerce_customers(email);
 class EcommerceStore:
     """SQLite-backed e-commerce cache. Takes a plain path so tests can use tmp dirs."""
 
+    # Columns added after the first release. ``CREATE TABLE IF NOT EXISTS``
+    # never touches an existing table, so old databases get them here.
+    _SYNC_STATE_MIGRATIONS = (
+        ("last_errors", "INTEGER NOT NULL DEFAULT 0"),
+        ("last_error", "TEXT NOT NULL DEFAULT ''"),
+    )
+
     def __init__(self, db_path: str | Path):
         self.path = Path(db_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._conn() as c:
             c.executescript(SCHEMA)
+            existing = {r[1] for r in
+                        c.execute("PRAGMA table_info(ecommerce_sync_state)")}
+            for col, decl in self._SYNC_STATE_MIGRATIONS:
+                if col not in existing:
+                    c.execute(f"ALTER TABLE ecommerce_sync_state "
+                              f"ADD COLUMN {col} {decl}")
 
     @contextmanager
     def _conn(self):
@@ -259,15 +274,29 @@ class EcommerceStore:
             return [dict(r) for r in c.execute(q, args).fetchall()]
 
     # ---- sync state ----
-    def set_sync_state(self, shop: str, resource: str, count: int) -> None:
+    def set_sync_state(self, shop: str, resource: str, count: int,
+                       errors: int = 0, error: str = "") -> None:
+        """Record per-resource sync progress.
+
+        Called after *each* resource finishes (not once at the end of a
+        whole sync), so a run that dies halfway still leaves progress
+        behind: ``last_count`` is how many items of this resource were
+        cached, ``last_errors`` / ``last_error`` record what failed.
+        A re-run re-fetches and upserts idempotently (upserts key on
+        ``remote_id``), so already-cached rows are refreshed, never
+        duplicated, and failed items get another chance.
+        """
         with self._conn() as c:
             c.execute(
                 "INSERT INTO ecommerce_sync_state(shop, resource, last_synced_at,"
-                " last_count) VALUES(?,?,?,?)"
+                " last_count, last_errors, last_error) VALUES(?,?,?,?,?,?)"
                 " ON CONFLICT(shop, resource) DO UPDATE SET"
                 " last_synced_at=excluded.last_synced_at,"
-                " last_count=excluded.last_count",
-                (shop or "", resource, time.time(), int(count)),
+                " last_count=excluded.last_count,"
+                " last_errors=excluded.last_errors,"
+                " last_error=excluded.last_error",
+                (shop or "", resource, time.time(), int(count),
+                 int(errors), error or ""),
             )
 
     def get_sync_state(self, shop: str, resource: str) -> dict | None:
@@ -276,6 +305,14 @@ class EcommerceStore:
                 "SELECT * FROM ecommerce_sync_state WHERE shop=? AND resource=?",
                 (shop or "", resource)).fetchone()
             return dict(row) if row else None
+
+    def get_sync_progress(self, shop: str) -> dict:
+        """Per-resource sync progress for a shop: ``{resource: state}``."""
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT * FROM ecommerce_sync_state WHERE shop=?",
+                (shop or "",)).fetchall()
+            return {r["resource"]: dict(r) for r in rows}
 
     def counts(self) -> dict:
         with self._conn() as c:
