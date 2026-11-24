@@ -106,20 +106,40 @@ def register(registry):
             "Render a draft video locally with ffmpeg (720p): one still "
             "image per scene plus Edge-TTS narration (Arabic default). "
             "Output is a local draft.mp4 under data/video/ — nothing is "
-            "uploaded or published. Requires ffmpeg installed."
+            "uploaded or published. Requires ffmpeg installed. "
+            "Second slice: a 0.5s crossfade between scenes (set "
+            "transitions=false to disable, transition_seconds to change "
+            "it), subtitles as an SRT sidecar + soft track in the mp4 "
+            "(auto-on for Arabic narration; subtitles=false to disable), "
+            "and a cover.jpg thumbnail from the first scene."
         ),
         permission=Permission.CAUTION,
         parameters={"type": "object", "properties": {
             "project_id": {"type": "integer"},
             "voice": {"type": "string"},
+            "subtitles": {"type": "boolean",
+                          "description": "Force subtitles on/off; omitted "
+                                         "means auto (on for Arabic)."},
+            "transitions": {"type": "boolean", "default": True,
+                            "description": "Crossfade between scenes."},
+            "transition_seconds": {"type": "number", "default": 0.5,
+                                   "description": "Crossfade length in "
+                                                  "seconds (max 2, clamped "
+                                                  "to half the shortest "
+                                                  "scene)."},
         }, "required": ["project_id"]},
     )
     async def video_render_draft(project_id: int,
-                                 voice: str | None = None) -> str:
+                                 voice: str | None = None,
+                                 subtitles: bool | None = None,
+                                 transitions: bool = True,
+                                 transition_seconds: float = 0.5) -> str:
         store = _store(cfg)
         try:
-            result = await render_draft(int(project_id), store, cfg,
-                                        voice=voice)
+            result = await render_draft(
+                int(project_id), store, cfg, voice=voice,
+                subtitles=subtitles, transitions=transitions,
+                transition_seconds=transition_seconds)
         except RenderError as e:
             return _json({"ok": False, "project_id": int(project_id),
                           "error": str(e)})
