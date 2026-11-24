@@ -141,6 +141,45 @@ def register(registry):
         )
         return proc.stdout.strip() or proc.stderr.strip()
 
+    @tool(
+        name="self_healing_guard_status",
+        description="Read-only status of the self-healing guard: watchdog script, safe-commit snapshot, and daemon health. Used by the self-config system before any self-change.",
+        permission=Permission.SAFE,
+        parameters={"type": "object", "properties": {}},
+    )
+    def self_healing_guard_status() -> str:
+        """Report guard state without changing anything."""
+        import urllib.error
+        import urllib.request
+
+        watchdog = root_dir / "scripts" / "jarvis_watchdog.sh"
+        safe_file = root_dir / "data" / ".jarvis_safe_commit"
+        safe = (
+            safe_file.read_text(encoding="utf-8").strip()
+            if safe_file.exists()
+            else "none recorded"
+        )
+        try:
+            with urllib.request.urlopen(
+                "http://127.0.0.1:7341/api/health", timeout=3
+            ) as resp:
+                health = (
+                    f"HTTP {resp.status}"
+                    if resp.status == 200
+                    else f"HTTP {resp.status} (unhealthy)"
+                )
+        except urllib.error.HTTPError as exc:
+            health = f"HTTP {exc.code} (unhealthy)"
+        except Exception as exc:  # noqa: BLE001
+            health = f"unreachable ({exc})"
+        return (
+            "self-healing guard status:\n"
+            f"  watchdog: {'present' if watchdog.exists() else 'MISSING'} "
+            f"({watchdog})\n"
+            f"  safe_commit: {safe}\n"
+            f"  health: {health}"
+        )
+
     registry.add_pending("self_healing_tools")
     registry.register_plugin(PluginInfo(
         name="self_healing_tools",
