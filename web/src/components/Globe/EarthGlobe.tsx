@@ -330,7 +330,7 @@ function buildArcGeometry(
 export default function EarthGlobe(props: EarthGlobeProps) {
   const {
     radius = 1.9,
-    rotationSpeed = 0.006,
+    rotationSpeed = 0.02,
     autoRotate = true,
     atmosphere = true,
     dayNight = true,
@@ -758,17 +758,21 @@ export default function EarthGlobe(props: EarthGlobeProps) {
               <div
                 style={{
                   fontSize: 10,
-                  fontFamily: "ui-monospace, monospace",
-                  color: "#bae6fd",
-                  background: "rgba(2, 12, 24, 0.6)",
-                  border: "1px solid rgba(125, 211, 252, 0.35)",
+                  fontFamily: "system-ui, -apple-system, sans-serif",
+                  color: "#e0f2fe",
+                  background: "rgba(2, 12, 24, 0.75)",
+                  border: "1px solid rgba(56, 189, 248, 0.4)",
                   borderRadius: 999,
-                  padding: "1px 6px",
+                  padding: "1px 7px",
                   whiteSpace: "nowrap",
                   textShadow: "0 0 6px rgba(56, 189, 248, 0.8)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 3,
                 }}
               >
-                {city.name}
+                <span style={{ fontWeight: 600 }}>{city.name}</span>
+                <span style={{ color: "#7dd3fc", fontSize: 9 }}>({city.country})</span>
               </div>
             </Html>
           </group>
