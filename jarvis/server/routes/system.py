@@ -9,20 +9,22 @@ from __future__ import annotations
 import asyncio
 import base64
 import collections
+import ipaddress
 import json
 import logging
 import os
 import platform
 import re
 import shutil
+import socket
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 import psutil
 from fastapi import APIRouter, File, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool
 
 from .common import _services
 
@@ -573,19 +575,79 @@ async def classify_endpoint(text: str):
         "raw_match": m.raw_match,
     }
 
+# --- Persona / mission persistence (worker L hardening) -------------------
+# Previously POST /persona and POST /mission only mutated the in-memory
+# Config object, so a restart silently reverted them to config.yaml /
+# persona/jarvis-ar.md. They now persist to a JSON state file under
+# data/ (data/system_state.json, written atomically via temp file +
+# os.replace) and every GET reads that file first, falling back to the
+# in-memory config value when no persisted value exists. The persona
+# file (cfg.A.persona_file) is deliberately NOT rewritten here: the
+# state file is the override layer, so a short persona set via the API
+# can never clobber the full persona document on disk.
+_SYSTEM_STATE_FILE = "system_state.json"
+
+
+def _system_state_path(cfg) -> Path:
+    try:
+        return cfg.abs_path("data") / _SYSTEM_STATE_FILE
+    except Exception:  # noqa: BLE001 - fake/minimal cfg objects in tests
+        return Path("data") / _SYSTEM_STATE_FILE
+
+
+def _read_system_state(cfg) -> dict:
+    """Best-effort read of data/system_state.json; {} when absent/corrupt."""
+    try:
+        raw = _system_state_path(cfg).read_text(encoding="utf-8")
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001 - missing/corrupt file = no overrides
+        return {}
+
+
+def _write_system_state(cfg, updates: dict) -> dict:
+    """Atomically merge `updates` into data/system_state.json.
+
+    Raises OSError on failure; callers must not claim success then.
+    """
+    path = _system_state_path(cfg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    state = _read_system_state(cfg)
+    for key, value in updates.items():
+        if isinstance(value, dict) and isinstance(state.get(key), dict):
+            state[key] = {**state[key], **value}
+        else:
+            state[key] = value
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+    return state
+
+
 class PersonaBody(BaseModel):
     persona: str
 
 @router.get("/persona")
 async def get_persona(request: Request):
     cfg, *_ = _services(request)
-    return {"persona": cfg.A.persona, "name": cfg.A.name}
+    persisted = _read_system_state(cfg).get("persona")
+    persona = persisted if isinstance(persisted, str) and persisted else cfg.A.persona
+    return {"persona": persona, "name": cfg.A.name}
 
 
 @router.post("/persona")
 async def set_persona(request: Request, body: PersonaBody):
     cfg, *_ = _services(request)
-    cfg.A.persona = body.persona
+    persona = (body.persona or "").strip()
+    if not persona:
+        return JSONResponse({"ok": False, "error": "persona must not be empty",
+                             "code": "bad_persona"}, status_code=400)
+    try:
+        _write_system_state(cfg, {"persona": persona})
+    except OSError as e:
+        return JSONResponse({"ok": False, "error": f"could not persist persona: {e}",
+                             "code": "persist_failed"}, status_code=500)
+    cfg.A.persona = persona
     return {"ok": True}
 
 # iframe is then JARVIS's own origin.
@@ -599,25 +661,217 @@ _HOP_BY_HOP = {
 }
 
 
-@router.get("/proxy")
-async def iframe_proxy(url: str = Query(..., min_length=8)):
+# ============================ SSRF mitigation (worker L) ==================
+# /proxy and /reader used to fetch ANY caller-supplied URL with
+# follow_redirects=True and no size limit — a classic SSRF: the server
+# could be made to hit localhost, RFC-1918 hosts, or cloud metadata
+# endpoints (169.254.169.254) and return the response. Every outbound
+# fetch from these routes now goes through validate_public_url() +
+# _fetch_public() below.
+#
+# RESIDUAL LIMITATION (honest): validation resolves DNS and checks the
+# resolved address, but httpx re-resolves the hostname when it connects,
+# so a DNS-rebinding attacker (a hostname whose DNS flips from a public
+# IP at validation time to a private IP at connect time, inside the
+# request's TTL window) could still slip through. Closing that gap
+# needs an IP-pinned transport (connect to the validated IP with the
+# original Host header / TLS SNI) — out of scope for this change.
+# Redirects are followed manually (max 5), re-validating EVERY hop, so
+# a public URL that 302s to http://127.0.0.1/ is blocked, not followed.
+_FETCH_TIMEOUT = 15.0
+_FETCH_MAX_BYTES = 5_000_000  # 5 MB cap on any proxied / reader response
+_MAX_REDIRECTS = 5
+_BLOCKED_HOSTNAMES = {"localhost", "metadata", "metadata.google.internal"}
+_CLOUD_METADATA_IPS = {
+    "169.254.169.254",   # AWS / GCP / Azure IMDS
+    "169.254.170.2",     # ECS task metadata
+    "100.100.100.200",   # Alibaba Cloud metadata
+    "fd00:ec2::254",     # AWS IPv6 IMDS
+}
+
+
+class _UnsafeURL(ValueError):
+    """A fetch URL that failed SSRF validation (structured error)."""
+
+    def __init__(self, message: str, *, code: str = "ssrf_blocked", status_code: int = 403):
+        super().__init__(message)
+        self.code = code
+        self.status_code = status_code
+
+
+class _ResponseTooLarge(ValueError):
+    """A fetch response that exceeded _FETCH_MAX_BYTES."""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.code = "response_too_large"
+        self.status_code = 413
+
+
+def _unsafe_url_response(exc: ValueError) -> JSONResponse:
+    code = getattr(exc, "code", "ssrf_blocked")
+    status = getattr(exc, "status_code", 403)
+    return JSONResponse({"ok": False, "error": str(exc), "code": code}, status_code=status)
+
+
+def _resolve_host(hostname: str, port: int) -> list[str]:
+    """Resolve a hostname to its IP addresses (sync; call via to_thread)."""
+    try:
+        infos = socket.getaddrinfo(hostname, port, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as e:
+        raise _UnsafeURL(f"cannot resolve host '{hostname}': {e}",
+                         code="dns_failed", status_code=502) from e
+    ips = sorted({info[4][0] for info in infos if info[4]})
+    if not ips:
+        raise _UnsafeURL(f"cannot resolve host '{hostname}'",
+                         code="dns_failed", status_code=502)
+    return ips
+
+
+def _check_ip_allowed(ip_str: str) -> None:
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError as e:
+        raise _UnsafeURL(f"unparsable address '{ip_str}'", code="bad_url",
+                         status_code=400) from e
+    if ip_str in _CLOUD_METADATA_IPS:
+        raise _UnsafeURL(f"destination is a cloud metadata endpoint: {ip_str}")
+    if (ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_multicast
+            or ip.is_reserved or ip.is_unspecified
+            or ip in ipaddress.ip_network("100.64.0.0/10")):  # CGNAT, not public
+        raise _UnsafeURL(f"destination resolves to a non-public address: {ip_str}")
+
+
+def validate_public_url(url: str, *, _resolve=None) -> str:
+    """Validate a caller-supplied fetch URL; return the normalised URL.
+
+    Rules: http/https only, no embedded credentials, hostname must not
+    be localhost/metadata-ish, and EVERY resolved address must be a
+    public IP. Raises _UnsafeURL (a ValueError) on any failure.
+    `_resolve` is an injectable resolver for tests (defaults to the
+    module-level _resolve_host, looked up at call time so monkeypatching
+    works); pass None to use the real DNS resolver.
+    """
+    if not isinstance(url, str) or not url.strip():
+        raise _UnsafeURL("empty url", code="bad_url", status_code=400)
     u = url.strip()
-    if not u.startswith(("http://", "https://")):
+    lowered = u.lower()
+    if lowered.startswith(("http://", "https://")):
+        pass
+    elif "://" in u:
+        # e.g. ftp://, file://, gopher:// — never silently rewrite these
+        # into an https:// URL (that would hide the scheme from the check).
+        raise _UnsafeURL(f"unsupported scheme in URL: {u.split('://', 1)[0]!r}",
+                         code="bad_url", status_code=400)
+    else:
         u = "https://" + u
     parsed = urlparse(u)
-    if not parsed.netloc:
-        return JSONResponse({"error": "bad url"}, status_code=400)
+    if parsed.scheme not in ("http", "https"):
+        raise _UnsafeURL(f"unsupported scheme: {parsed.scheme!r}",
+                         code="bad_url", status_code=400)
+    if parsed.username or parsed.password:
+        raise _UnsafeURL("credentials in URL are not allowed")
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not host:
+        raise _UnsafeURL("missing host", code="bad_url", status_code=400)
+    if host in _BLOCKED_HOSTNAMES or host.endswith((".localhost", ".local", ".internal")):
+        raise _UnsafeURL(f"destination host is blocked: {host}")
+    try:
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError as e:
+        raise _UnsafeURL(f"invalid port: {e}", code="bad_url", status_code=400) from e
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        ip = None
+    if ip is not None:
+        _check_ip_allowed(str(ip))
+    else:
+        resolver = _resolve or _resolve_host
+        for ip_str in resolver(host, port):
+            _check_ip_allowed(ip_str)
+    return u
 
+
+class _FetchResult:
+    """Outcome of _fetch_public: final URL, status, headers, bounded body."""
+
+    def __init__(self, final_url: str, status_code: int, headers: dict, body: bytes):
+        self.final_url = final_url
+        self.status_code = status_code
+        self.headers = headers
+        self.body = body
+
+    @property
+    def text(self) -> str:
+        return self.body.decode("utf-8", "replace")
+
+
+async def _fetch_public(url: str, *, headers: dict | None = None,
+                        timeout: float = _FETCH_TIMEOUT,
+                        max_bytes: int = _FETCH_MAX_BYTES) -> _FetchResult:
+    """Fetch a validated public URL with manual redirect + size limits.
+
+    Validates the initial URL and every redirect target; streams the
+    body and aborts (raising _ResponseTooLarge) past `max_bytes`.
+    Raises _UnsafeURL for blocked destinations, httpx errors propagate
+    to the caller (mapped to 502 there).
+    """
+    current = await asyncio.to_thread(validate_public_url, url)
+    for _hop in range(_MAX_REDIRECTS + 1):
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False,
+                                     headers=headers) as client:
+            async with client.stream("GET", current) as r:
+                if r.status_code in (301, 302, 303, 307, 308):
+                    location = r.headers.get("location")
+                    if not location:
+                        return _FetchResult(current, r.status_code, dict(r.headers), b"")
+                    current = await asyncio.to_thread(
+                        validate_public_url, urljoin(current, location))
+                    continue
+                body = bytearray()
+                async for chunk in r.aiter_bytes(65536):
+                    body.extend(chunk)
+                    if len(body) > max_bytes:
+                        raise _ResponseTooLarge(
+                            f"response exceeds {_FETCH_MAX_BYTES} byte limit")
+                return _FetchResult(current, r.status_code, dict(r.headers), bytes(body))
+    raise _UnsafeURL("too many redirects", code="too_many_redirects", status_code=502)
+
+
+def _normalise_fetch_url(raw: str) -> str:
+    """Add the default https:// scheme to a bare hostname only.
+
+    A URL that already carries a non-http(s) scheme is returned as-is
+    so validate_public_url() rejects it instead of it being rewritten.
+    """
+    u = raw.strip()
+    lowered = u.lower()
+    if lowered.startswith(("http://", "https://")) or "://" in u:
+        return u
+    return "https://" + u
+
+
+@router.get("/proxy")
+async def iframe_proxy(url: str = Query(..., min_length=8)):
+    # Validate BEFORE any fetch (defence in depth: _fetch_public also
+    # validates, but a blocked URL must never reach the fetch layer).
+    try:
+        await asyncio.to_thread(validate_public_url, _normalise_fetch_url(url))
+    except _UnsafeURL as e:
+        return _unsafe_url_response(e)
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
     }
     try:
-        async with httpx.AsyncClient(timeout=25, follow_redirects=True, headers=headers) as c:
-            r = await c.get(u)
+        r = await _fetch_public(_normalise_fetch_url(url), headers=headers)
+    except (_UnsafeURL, _ResponseTooLarge) as e:
+        return _unsafe_url_response(e)
     except Exception as e:  # noqa: BLE001
-        return HTMLResponse(f"<pre>Proxy error: {e}</pre>", status_code=502)
+        return JSONResponse({"ok": False, "error": f"Proxy error: {e}",
+                             "code": "fetch_failed"}, status_code=502)
 
     ctype = r.headers.get("content-type", "text/html")
     out_headers = {
@@ -628,6 +882,7 @@ async def iframe_proxy(url: str = Query(..., min_length=8)):
 
     if "html" in ctype.lower():
         text = r.text
+        parsed = urlparse(r.final_url)
         base = f"{parsed.scheme}://{parsed.netloc}"
         # Inject <base> so relative URLs resolve. Strip frame-busting scripts (best-effort).
         base_tag = f'<base href="{base}/">'
@@ -639,7 +894,7 @@ async def iframe_proxy(url: str = Query(..., min_length=8)):
         text = re.sub(r"if\s*\(\s*(?:top|window\.top)\s*!?=+\s*(?:self|window)[\s\S]*?\)\s*[\s\S]*?;", "", text, count=4)
         return HTMLResponse(text, status_code=r.status_code, headers=out_headers)
 
-    return Response(content=r.content, status_code=r.status_code, media_type=ctype, headers=out_headers)
+    return Response(content=r.body, status_code=r.status_code, media_type=ctype, headers=out_headers)
 
 
 # ============================ In-app reader =================================
@@ -657,21 +912,21 @@ _GNEWS_LINK_RE = re.compile(
 
 
 async def _resolve_news_url(url: str) -> str:
-    """Resolve Google News wrapper URLs to the real publisher URL."""
+    """Resolve Google News wrapper URLs to the real publisher URL.
+
+    Fetches through _fetch_public, so the wrapper URL and every
+    redirect hop are SSRF-validated; a wrapper that redirects to a
+    private/metadata destination falls back to the original URL.
+    """
     if not _GNEWS_RE.match(url):
         return url
     try:
-        async with httpx.AsyncClient(
-            timeout=15,
-            follow_redirects=True,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                              "AppleWebKit/537.36 (KHTML, like Gecko) "
-                              "Chrome/120.0 Safari/537.36",
-            },
-        ) as c:
-            r = await c.get(url)
-        final = str(r.url)
+        r = await _fetch_public(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/120.0 Safari/537.36",
+        })
+        final = r.final_url
         if not _GNEWS_RE.match(final):
             return final
         m = _GNEWS_LINK_RE.search(r.text or "")
@@ -684,9 +939,11 @@ async def _resolve_news_url(url: str) -> str:
 
 @router.get("/reader")
 async def reader(url: str = Query(..., min_length=8)):
-    u = url.strip()
-    if not u.startswith(("http://", "https://")):
-        u = "https://" + u
+    u = _normalise_fetch_url(url)
+    try:
+        await asyncio.to_thread(validate_public_url, u)
+    except _UnsafeURL as e:
+        return _unsafe_url_response(e)
     real = await _resolve_news_url(u)
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -695,24 +952,26 @@ async def reader(url: str = Query(..., min_length=8)):
         "Accept-Language": "en-US,en;q=0.9",
     }
     try:
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True, headers=headers) as c:
-            r = await c.get(real)
+        r = await _fetch_public(real, headers=headers)
         html = r.text or ""
+    except (_UnsafeURL, _ResponseTooLarge) as e:
+        return _unsafe_url_response(e)
     except Exception as e:  # noqa: BLE001
-        return JSONResponse({"ok": False, "error": f"fetch failed: {e}"}, status_code=502)
+        return JSONResponse({"ok": False, "error": f"fetch failed: {e}",
+                             "code": "fetch_failed"}, status_code=502)
 
     try:
         import trafilatura
         content_html = trafilatura.extract(
             html,
-            url=str(r.url),
+            url=r.final_url,
             output_format="html",
             include_images=True,
             include_links=True,
             with_metadata=False,
             favor_recall=True,
         ) or ""
-        meta_obj = trafilatura.extract_metadata(html, default_url=str(r.url))
+        meta_obj = trafilatura.extract_metadata(html, default_url=r.final_url)
         meta: dict = {}
         if meta_obj is not None:
             for k in ("title", "author", "date", "sitename", "image", "description"):
@@ -724,11 +983,11 @@ async def reader(url: str = Query(..., min_length=8)):
 
     return {
         "ok": True,
-        "url": str(r.url),
+        "url": r.final_url,
         "title": meta.get("title") or "",
         "author": meta.get("author") or "",
         "published": meta.get("date") or "",
-        "site": meta.get("sitename") or _host(str(r.url)),
+        "site": meta.get("sitename") or _host(r.final_url),
         "image": meta.get("image") or "",
         "description": meta.get("description") or "",
         "content_html": content_html,
@@ -742,8 +1001,34 @@ def _host(url: str) -> str:
     except Exception:
         return url
 
+# Exact typed confirmation string required by POST /cleanslate,
+# in addition to {"confirm": true}. Any caller (e.g. the HUD button)
+# must send BOTH fields; a missing/empty body is rejected (FastAPI
+# returns 422 for a missing body, 400 below for a wrong one).
+CLEANSLATE_CONFIRMATION = "CLEAN SLATE"
+
+
+class CleanSlateBody(BaseModel):
+    # StrictBool: only a real JSON true counts. Plain `bool` would let
+    # Pydantic coerce "yes" / 1 / "true" into True, weakening the confirm.
+    confirm: StrictBool = False
+    confirmation: str = ""
+
+
 @router.post("/cleanslate")
-async def clean_slate(request: Request):
+async def clean_slate(request: Request, body: CleanSlateBody):
+    """Wipe conversation history (memory preserved).
+
+    Contract: POST {"confirm": true, "confirmation": "CLEAN SLATE"}.
+    Anything else is rejected with 400 and nothing is wiped — this
+    endpoint must never fire from an accidental click or a bare POST.
+    """
+    if body.confirm is not True or (body.confirmation or "").strip() != CLEANSLATE_CONFIRMATION:
+        return JSONResponse(
+            {"ok": False,
+             "error": 'cleanslate requires {"confirm": true, "confirmation": "CLEAN SLATE"}',
+             "code": "confirmation_required"},
+            status_code=400)
     cfg, orch, registry, memory, agents = _services(request)
     orch.reset()
     return {"ok": True, "message": "Clean slate executed. Conversation history wiped. Memory preserved."}
@@ -752,6 +1037,10 @@ async def clean_slate(request: Request):
 @router.get("/mission")
 async def mission(request: Request):
     cfg, *_ = _services(request)
+    persisted = _read_system_state(cfg).get("mission")
+    if isinstance(persisted, dict):
+        return {"enabled": persisted.get("enabled", cfg.mission.enabled),
+                "project_path": persisted.get("project_path", cfg.mission.project_path)}
     return {"enabled": cfg.mission.enabled, "project_path": cfg.mission.project_path}
 
 
@@ -766,6 +1055,11 @@ async def set_mission(request: Request, body: MissionBody):
     p = _P(body.path).expanduser().resolve()
     if not p.exists():
         return JSONResponse({"ok": False, "error": f"path not found: {p}"}, status_code=400)
+    try:
+        _write_system_state(cfg, {"mission": {"enabled": True, "project_path": str(p)}})
+    except OSError as e:
+        return JSONResponse({"ok": False, "error": f"could not persist mission: {e}",
+                             "code": "persist_failed"}, status_code=500)
     cfg.mission.enabled = True
     cfg.mission.project_path = str(p)
     memory.set_path("mission", str(p), "project")
