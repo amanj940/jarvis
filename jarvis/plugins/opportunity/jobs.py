@@ -14,7 +14,9 @@ Registration with the Phase 4 scheduler:
 ``register_opportunity_daily_job(store, scheduler, leads_store)`` creates
 a persistent ``TaskStore`` task (kind ``opportunity_scan``, cron
 ``0 9 * * *`` = daily 09:00 UTC) and registers its handler, so the scan
-survives restarts exactly like reminders and notes do.
+survives restarts exactly like reminders and notes do. Registration is
+idempotent: calling it again (e.g. on every server boot) reuses the
+existing pending task instead of creating a duplicate.
 """
 from __future__ import annotations
 
@@ -252,6 +254,10 @@ def register_opportunity_daily_job(task_store, scheduler, leads_store: LeadsStor
     Pass a ``fetcher`` directly, or a ``registry`` — with a registry and
     no fetcher, the production ``web_search`` fetcher is built from it
     (``build_web_search_fetcher``). An explicit fetcher always wins.
+
+    Idempotent: the server calls this on every boot, so an existing
+    pending ``opportunity_scan`` task is reused (and re-aligned to the
+    requested schedule if it drifted) instead of creating a duplicate.
     """
     if fetcher is None and registry is not None:
         fetcher = build_web_search_fetcher(registry)
@@ -261,12 +267,22 @@ def register_opportunity_daily_job(task_store, scheduler, leads_store: LeadsStor
         return summary.get("alerts", "")
 
     scheduler.register_handler("opportunity_scan", _handler)
-    task = task_store.create(
-        "Daily opportunity scan",
-        kind="opportunity_scan",
-        payload={"sources": [s["name"] for s in list_sources()]},
-        schedule=schedule,
-    )
+    existing = [
+        t for t in task_store.list_tasks(kind="opportunity_scan", status="pending")
+    ]
+    if existing:
+        task = existing[0]
+        if task.get("schedule") != schedule:
+            task = task_store.update(task["id"], schedule=schedule)
+        log.info("opportunity daily job already registered (task #%s, %s)",
+                 task["id"], task.get("schedule"))
+    else:
+        task = task_store.create(
+            "Daily opportunity scan",
+            kind="opportunity_scan",
+            payload={"sources": [s["name"] for s in list_sources()]},
+            schedule=schedule,
+        )
     if hasattr(scheduler, "schedule_task"):
         scheduler.schedule_task(task)
     return task
