@@ -18,6 +18,7 @@ import { wsClient } from "../../lib/ws";
 import { mic } from "../../lib/voice";
 import LivingEntityCore from "./LivingEntityCore";
 import Settings from "../HUD/Settings";
+import HoloToggle from "../HUD/HoloToggle";
 import ConfirmModal from "../Tools/ConfirmModal";
 import WorkspacesModal from "../HUD/WorkspacesModal";
 import BootSequence from "../Boot/BootSequence";
@@ -228,6 +229,9 @@ export default function LivingEntityScreen() {
             <span>{voiceEnabled ? "🔊" : "🔇"}</span>
             <span className="text-[10px] font-mono text-slate-400">{voiceEnabled ? "صوت" : "صامت"}</span>
           </button>
+
+          {/* Holo rings toggle (ambient layer around the globe) */}
+          <HoloToggle />
 
           {/* Projects workspace browser */}
           <button
