@@ -230,11 +230,8 @@ export default function LivingEntityCore() {
   const [tabHidden, setTabHidden] = useState(false);
   // If the Earth globe ever fails to render, fall back to the old orb.
   const [globeFailed, setGlobeFailed] = useState(false);
-  // Ambient holo shapes around the globe (default ON). Dispatch a
-  // `jarvis:toggle-holo` window event (voice command, HUD button, console)
-  // to show/hide them. If the holo layer itself ever throws, it hides
-  // instead of taking the globe down with it.
-  const [holoVisible, setHoloVisible] = useState(true);
+  // Ambient holo shapes around the globe (default OFF for clean, realistic Earth).
+  const [holoVisible, setHoloVisible] = useState(false);
   const [holoFailed, setHoloFailed] = useState(false);
   const reducedMotion = useReducedMotion();
 
