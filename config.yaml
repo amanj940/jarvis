@@ -27,6 +27,14 @@ model:
   request_timeout_seconds: 180
   native_tool_calls: true
   reasoning_effort: none
+  # Multi-key rotation + provider failover cascade (audit/fixes).
+  # api_keys_pool maps provider -> extra keys, e.g.:
+  #   api_keys_pool: { groq: ["${GROQ_API_KEY_2}"], gemini: ["key1", "key2"] }
+  api_keys_pool: {}
+  fallback_provider: openrouter
+  fallback_model: deepseek/deepseek-chat
+  fallback_endpoint: ""
+  key_cooldown_seconds: 60.0
 
 image_model:
   # Selectable in the JARVIS command bar. Options:
