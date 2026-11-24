@@ -3,16 +3,16 @@
 #  Edit freely. Secrets belong in .env, not here.
 #  The code defaults in jarvis/config.py mirror the values below, so a
 #  missing or partial config.yaml behaves the same as this file.
-#  The assistant persona lives in persona/jarvis.md (see `A:` below).
+#  The assistant persona lives in persona/jarvis-ar.md (see `A:` below).
 # =============================================================
 
 A:
   name: JARVIS
-  # Persona lives in persona/jarvis.md (single source of truth).
+  # Persona lives in persona/jarvis-ar.md (single source of truth).
   # An inline `persona:` here still works and takes precedence.
-  # Arabic persona: persona/jarvis-ar.md — set persona_file to it to run
-  # JARVIS in Arabic (Phase 4). The English file stays the default.
-  persona_file: persona/jarvis.md
+  # English persona: persona/jarvis.md — set persona_file to it to run
+  # JARVIS in English (Phase 4). The Arabic file is the default.
+  persona_file: persona/jarvis-ar.md
 
 model:
   # OpenAI-compatible endpoint example. Point this at Ollama, LM Studio, vLLM,
@@ -73,21 +73,24 @@ voice:
   stt_language: "ar"
   # stt_initial_prompt: null  # override the language default prompt in
   #                           # jarvis/models/whisper.py (Arabic/English)
-  # Persona: A.persona_file below selects the persona language. The
-  # English persona (persona/jarvis.md) stays the default; to run JARVIS
-  # in Arabic, set A.persona_file: persona/jarvis-ar.md (see docs/phase4-assistant.md).
+  # Persona: A.persona_file above selects the persona language. The
+  # Arabic persona (persona/jarvis-ar.md) is the default; to run JARVIS
+  # in English, set A.persona_file: persona/jarvis.md (see docs/phase4-assistant.md).
   # JARVIS TTS preference order (auto = first that initialises):
   #   1. piper   — community Paul-Bettany-style model (jgkawell/jarvis).
   #                Closest to the real JARVIS voice. Local, free, fan-use only.
+  #                ENGLISH-ONLY model — Arabic text skips Piper and goes to
+  #                Edge (see jarvis/models/tts.py is_arabic_text).
   #                Set piper_enabled: true + install piper-tts to activate.
   #   2. nvidia  — NVIDIA Riva cloud (needs NVIDIA_API_KEY).
-  #   3. edge    — Microsoft en-GB-RyanNeural (cinematic British male).
+  #   3. edge    — Microsoft ar-SA-HamedNeural (Hamed, Saudi Arabic).
+  #                Default voice for Arabic. Needs internet (edge-tts).
   # Phase 3: voice models load lazily on first use by default (fast
   # startup, no VRAM held from boot). Set preload_models: true — or
   # JARVIS_PRELOAD_MODELS=1 — to pre-warm Whisper + Piper at startup.
   preload_models: false
   provider: auto
-  edge_voice: en-GB-ThomasNeural    # deeper, more cinematic British male — naturally Bettany-like
+  edge_voice: ar-SA-HamedNeural    # Hamed Neural (Saudi Arabic) — default voice; Edge-TTS needs internet
   edge_rate: "-6%"                  # slight slow-down for gravitas, not so heavy it muddies
   edge_pitch: "+0Hz"                # native pitch — edge-tts neural models lose fidelity when pitch-shifted
 
