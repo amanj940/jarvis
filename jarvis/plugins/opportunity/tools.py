@@ -4,7 +4,9 @@
 registration time (see ``jobs.py``: ``build_web_search_fetcher``) — search
 snippets only, no page is ever fetched. Nothing here contacts a platform,
 submits anything, or spends money; leads are local SQLite rows a human
-reviews.
+reviews. Leads move through new -> reviewing -> pursuing -> won (or to
+lost / ignored) via ``opportunity_update_lead_status`` — a status change
+only, never a submission or an application.
 """
 from __future__ import annotations
 
@@ -19,7 +21,7 @@ from .jobs import (
     register_opportunity_daily_job,
     run_opportunity_scan,
 )
-from .leads import LeadsStore
+from .leads import VALID_STATUSES, LeadsStore
 from .scoring import score_lead
 from .sources import list_sources
 
@@ -73,6 +75,37 @@ def register(registry):
     def opportunity_list_leads(status: str | None = None, kind: str | None = None,
                                limit: int = 20) -> str:
         return _json({"ok": True, "leads": store.list_leads(status=status, kind=kind, limit=limit)})
+
+    @tool(
+        name="opportunity_update_lead_status",
+        description=(
+            "Move an opportunity lead through its lifecycle: new -> reviewing -> "
+            "pursuing -> won, or to lost / ignored. Local DB status change only — "
+            "never submits, applies, or spends anything."
+        ),
+        permission=Permission.CAUTION,
+        parameters={"type": "object", "properties": {
+            "lead_id": {"type": "integer"},
+            "status": {"type": "string", "enum": sorted(VALID_STATUSES)},
+        }, "required": ["lead_id", "status"]},
+    )
+    def opportunity_update_lead_status(lead_id: int, status: str) -> str:
+        status = (status or "").strip().lower()
+        if status not in VALID_STATUSES:
+            return _json({"ok": False,
+                          "error": f"unknown status {status!r}",
+                          "valid_statuses": sorted(VALID_STATUSES)})
+        current = store.get(lead_id)
+        if current is None:
+            return _json({"ok": False, "error": f"no lead with id {lead_id}"})
+        try:
+            updated = store.update_status(lead_id, status)
+        except ValueError as exc:
+            return _json({"ok": False, "error": str(exc)})
+        if updated is None:  # removed between the get and the update
+            return _json({"ok": False, "error": f"no lead with id {lead_id}"})
+        return _json({"ok": True, "lead": updated,
+                      "previous_status": current["status"]})
 
     @tool(
         name="opportunity_top_leads",
