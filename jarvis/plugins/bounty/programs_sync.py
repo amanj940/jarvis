@@ -21,8 +21,10 @@ import logging
 import re
 import sqlite3
 from typing import Any, Awaitable, Callable
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from urllib.parse import urlparse
 
+from ..common.urls import normalize_url
+from .programs import sync_platform_specs
 from .store import BountyStore
 
 log = logging.getLogger("jarvis.bounty.sync")
@@ -31,35 +33,21 @@ MEDIA_PREFIX = "__JARVIS_MEDIA__"
 
 # Public program directories (no login needed to list them) and the
 # site-scoped query used to find their program pages via web_search.
-PLATFORMS: list[dict] = [
-    {
-        "platform": "hackerone",
-        "name": "HackerOne",
-        "directory_url": "https://hackerone.com/directory",
-        "query": "site:hackerone.com/directory bug bounty program",
-    },
-    {
-        "platform": "bugcrowd",
-        "name": "Bugcrowd",
-        "directory_url": "https://bugcrowd.com/programs",
-        "query": "site:bugcrowd.com/programs bug bounty",
-    },
-    {
-        "platform": "intigriti",
-        "name": "Intigriti",
-        "directory_url": "https://intigriti.com/programs",
-        "query": "site:intigriti.com/programs bug bounty",
-    },
-    {
-        "platform": "yeswehack",
-        "name": "YesWeHack",
-        "directory_url": "https://yeswehack.com/programs",
-        "query": "site:yeswehack.com/programs bug bounty",
-    },
-]
+# Single source of truth: jarvis/plugins/bounty/programs.py PROGRAMS —
+# this list is derived from it, never copied by hand. ``normalize_url``
+# is re-exported here (imported from jarvis.plugins.common.urls) so
+# existing ``from .programs_sync import normalize_url`` imports keep
+# working; new code should import it from ``..common.urls`` directly.
+PLATFORMS: list[dict] = sync_platform_specs()
 
-_TRACKING_PARAMS = {"utm_source", "utm_medium", "utm_campaign", "utm_term",
-                    "utm_content", "fbclid", "gclid"}
+__all__ = [
+    "PLATFORMS",
+    "build_web_search_fetcher",
+    "list_sync_platforms",
+    "normalize_url",
+    "parse_search_results",
+    "sync_programs",
+]
 
 _LINE_RE = re.compile(
     r"^\s*\d+[.)]\s*(?P<title>.+?)\s*[—\-–]\s*(?P<url>https?://\S+)\s*$"
@@ -70,30 +58,6 @@ _URL_RE = re.compile(r"https?://[^\s)\"'<>]+")
 def list_sync_platforms() -> list[str]:
     """Platform keys the sync knows how to query."""
     return [p["platform"] for p in PLATFORMS]
-
-
-def normalize_url(url: str) -> str:
-    """Normalize a URL for dedup: lowercase scheme+host, no fragment,
-    no tracking params, no trailing slash. Returns "" for junk."""
-    if not url:
-        return ""
-    try:
-        parsed = urlparse(url.strip())
-    except ValueError:
-        return ""
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        return ""
-    query = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True)
-             if k not in _TRACKING_PARAMS]
-    path = parsed.path.rstrip("/") or ""
-    return urlunparse((
-        parsed.scheme.lower(),
-        parsed.netloc.lower(),
-        path,
-        "",
-        urlencode(query),
-        "",
-    ))
 
 
 def _clean_title(title: str, platform: str) -> str:
