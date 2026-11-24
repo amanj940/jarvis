@@ -140,10 +140,9 @@ export interface GeoCityDetail {
   };
 }
 
-// Geo/Atlas: the ~1,200 biggest cities (pop ≥ 100k) for the globe.
-// The full 7,342-city atlas stays searchable through the API/tools;
-// rendering all of it would clutter the globe on a weak laptop.
-const GEO_CITIES_URL = `${API_BASE}/api/geo/cities?min_population=100000&limit=1200`;
+// Geo/Atlas: major cities (pop >= 200k, up to 400) for the globe.
+// The full 7,342-city atlas stays searchable through the API/tools.
+const GEO_CITIES_URL = `${API_BASE}/api/geo/cities?min_population=200000&limit=400`;
 
 /** Fetch atlas cities; null when the backend is down or unseeded. */
 export async function fetchGeoCities(): Promise<GeoCity[] | null> {
@@ -857,7 +856,10 @@ export default function EarthGlobe(props: EarthGlobeProps) {
       const camDir = tmpCamDir.current
         .copy(state.camera.position)
         .normalize();
-      const facing: string[] = [];
+      const isZoomedOut = camDist > 7.5;
+      const maxLabels = isZoomedOut ? 14 : 20;
+      const scored: Array<{ id: string; score: number }> = [];
+
       for (const { city, pos } of cityPositions) {
         // World direction: group rotation only (voice pulse scale ~1
         // does not change direction).
@@ -865,11 +867,24 @@ export default function EarthGlobe(props: EarthGlobeProps) {
           .copy(pos)
           .applyAxisAngle(UP_AXIS, group.rotation.y)
           .normalize();
-        if (world.dot(camDir) > 0.12) facing.push(city.id);
+        const dot = world.dot(camDir);
+        // Only consider cities truly facing the camera directly
+        if (dot > 0.28) {
+          const capBonus = city.is_capital ? 4.5 : 0.0;
+          const pop = city.population || 100000;
+          const popScore = Math.log10(Math.max(pop, 100000));
+          // Weight: direct camera facing + capital status + population size
+          const score = dot * (isZoomedOut ? 2.5 : 4.0) + capBonus + popScore * (isZoomedOut ? 1.0 : 0.4);
+          scored.push({ id: city.id, score });
+        }
       }
-      if (facing.join(",") !== visibleCityIdsRef.current.join(",")) {
-        visibleCityIdsRef.current = facing;
-        setVisibleCityIds(facing);
+
+      scored.sort((a, b) => b.score - a.score);
+      const topIds = scored.slice(0, maxLabels).map((s) => s.id);
+
+      if (topIds.join(",") !== visibleCityIdsRef.current.join(",")) {
+        visibleCityIdsRef.current = topIds;
+        setVisibleCityIds(topIds);
       }
     } else if (visibleCityIdsRef.current.length > 0) {
       visibleCityIdsRef.current = [];
