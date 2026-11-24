@@ -18,6 +18,11 @@ Second slice (docs/video.md): optional 0.5s crossfades between scenes
 (``xfade`` — one re-encode), an SRT sidecar plus a soft ``mov_text``
 subtitle track (auto-on for Arabic narration), and a ``cover.jpg``
 thumbnail taken from the middle of the first scene.
+
+Third slice (docs/video.md): optional background-music track mixed
+under the narration with sidechain ducking (``video.music.enabled``,
+default off). One extra ffmpeg pass; the video stream is copied and
+only the audio is re-encoded.
 """
 from __future__ import annotations
 
@@ -43,6 +48,12 @@ DEFAULT_VOICE = "ar-SA-HamedNeural"
 # Crossfade between scenes (slice 2): default length, hard ceiling.
 DEFAULT_TRANSITION_SECONDS = 0.5
 MAX_TRANSITION_SECONDS = 2.0
+# Background music (slice 3): default level, ducking while narration speaks.
+DEFAULT_MUSIC_VOLUME = 0.15
+DUCK_THRESHOLD = 0.03
+DUCK_RATIO = 8.0
+DUCK_ATTACK_MS = 50
+DUCK_RELEASE_MS = 500
 
 FFMPEG_INSTALL_HINT = (
     "ffmpeg is required but was not found. Install it first, then retry: "
@@ -67,6 +78,29 @@ def _voice_settings(cfg: Any) -> tuple[str, str, str]:
     rate = (getattr(voice_cfg, "edge_rate", "") or "").strip() or "-6%"
     pitch = (getattr(voice_cfg, "edge_pitch", "") or "").strip() or "+0Hz"
     return voice, rate, pitch
+
+
+def _music_settings(cfg: Any) -> tuple[bool, float, str | None]:
+    """(enabled, volume, path) from ``video.music`` config, safe defaults.
+
+    Missing config means music off — the render is then byte-for-byte
+    the same pipeline as before (no extra pass, no behaviour change).
+    Volume is clamped to 0..1; a non-numeric value falls back to the
+    default. ``path`` is a local audio file (mp3/wav/ogg); empty means
+    no music even when enabled.
+    """
+    video_cfg = getattr(cfg, "video", None)
+    music_cfg = getattr(video_cfg, "music", None) if video_cfg is not None else None
+    enabled = bool(getattr(music_cfg, "enabled", False)) if music_cfg is not None else False
+    raw_volume = getattr(music_cfg, "volume", None) if music_cfg is not None else None
+    try:
+        volume = float(raw_volume) if raw_volume is not None else DEFAULT_MUSIC_VOLUME
+    except (TypeError, ValueError):
+        volume = DEFAULT_MUSIC_VOLUME
+    volume = max(0.0, min(1.0, volume))
+    raw_path = getattr(music_cfg, "path", "") if music_cfg is not None else ""
+    path = (raw_path or "").strip() or None
+    return enabled, volume, path
 
 
 async def synthesize_narration(
@@ -284,6 +318,61 @@ def xfade_clips(
     return out
 
 
+def build_music_mix_filter(music_volume: float = DEFAULT_MUSIC_VOLUME) -> str:
+    """Filter graph mixing a music track under the narration, with ducking.
+
+    Input ``[0:a]`` is the assembled narration (or silence when a scene
+    has none); input ``[1:a]`` is the music file. The narration is
+    split: one copy stays the main track, the other drives
+    ``sidechaincompress`` on the music, so the music drops while
+    someone speaks and returns between lines. ``amix`` uses
+    ``duration=first`` so the mix ends at the narration's length, and
+    ``normalize=0`` keeps the configured music level instead of
+    re-balancing the two tracks against each other.
+    """
+    vol = max(0.0, min(1.0, float(music_volume)))
+    return (
+        "[0:a]asplit=2[narr][side];"
+        f"[1:a]volume={vol:.3f}[m];"
+        f"[m][side]sidechaincompress=threshold={DUCK_THRESHOLD}"
+        f":ratio={DUCK_RATIO:.1f}:attack={DUCK_ATTACK_MS}"
+        f":release={DUCK_RELEASE_MS}[ducked];"
+        "[narr][ducked]amix=inputs=2:duration=first:normalize=0[aout]"
+    )
+
+
+def mix_music(
+    video: str | Path,
+    music_path: str | Path,
+    out_path: str | Path,
+    music_volume: float = DEFAULT_MUSIC_VOLUME,
+) -> Path:
+    """Mix a background-music track under the narration, with ducking.
+
+    One ffmpeg pass; the video stream is copied and only the audio is
+    re-encoded (AAC 128k, same as the scene clips). The music file is
+    looped (``-stream_loop -1``) to cover the whole video and the mix
+    stops at the video's length (``-shortest``). Raises RenderError if
+    the music file does not exist.
+    """
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    music = Path(music_path)
+    if not music.exists():
+        raise RenderError(f"background music file not found: {music}")
+    _run_ffmpeg([
+        "ffmpeg", "-y",
+        "-i", str(video),
+        "-stream_loop", "-1", "-i", str(music),
+        "-filter_complex", build_music_mix_filter(music_volume),
+        "-map", "0:v", "-map", "[aout]",
+        "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
+        "-shortest",
+        str(out),
+    ])
+    return out
+
+
 def mux_subtitles(
     video: str | Path, srt_path: str | Path, out_path: str | Path,
     language: str = "ara",
@@ -356,6 +445,16 @@ async def render_draft(
         shortest scene). Off = the old fast stream-copy concat.
       - A ``cover.jpg`` thumbnail (middle of the first scene) is always
         extracted next to the video; a thumbnail failure only warns.
+
+    Slice 3 options (background music, ``video.music`` in config):
+      - ``enabled`` (default False) + ``path`` (local audio file) +
+        ``volume`` (default 0.15). When enabled with a path, the music
+        is mixed under the narration with sidechain ducking — it drops
+        while narration speaks and returns between lines. The music is
+        looped to cover the video; the video stream is copied and only
+        the audio is re-encoded (one extra pass). A missing music file
+        only warns — the video renders without music. When disabled or
+        no path is configured, the render is exactly as before.
     """
     if not ffmpeg_available():
         raise RenderError(FFMPEG_INSTALL_HINT)
@@ -429,6 +528,27 @@ async def render_draft(
         for clip in clips:  # keep the final mp4 + narration; drop intermediates
             clip.unlink(missing_ok=True)
 
+        # ---- slice 3: background music under the narration ----
+        music_enabled, music_volume, music_path = _music_settings(cfg)
+        music_mixed = False
+        music_warning = ""
+        if music_enabled and music_path:
+            try:
+                tmp_mixed = workdir / "draft_music.mp4"
+                await asyncio.to_thread(
+                    mix_music, output, music_path, tmp_mixed, music_volume)
+                tmp_mixed.replace(output)
+                music_mixed = True
+            except RenderError as e:
+                log.warning("background music mix failed, keeping video "
+                            "without music: %s", e)
+                music_warning = f"Music failed ({e}); video is unaffected."
+        elif music_enabled:
+            log.warning("background music enabled but no video.music.path "
+                        "configured — rendering without music")
+            music_warning = ("Music enabled but no video.music.path "
+                             "configured; video rendered without music.")
+
         # ---- slice 2: subtitles (sidecar .srt + soft mov_text track) ----
         want_subs = (
             subtitles if subtitles is not None
@@ -485,10 +605,17 @@ async def render_draft(
             "subtitle_path": subtitle_path,
             "transitions": bool(use_transition > 0),
             "transition_seconds": round(use_transition, 3),
+            "music": music_mixed,
+            "music_path": music_path or "",
+            "music_volume": music_volume,
             "thumbnail": thumbnail_path,
             "thumbnail_path": thumbnail_path,
             "note": "DRAFT only — local file, nothing was uploaded or published.",
         }
+        if music_warning:
+            result["warning"] = (
+                (result.get("warning", "") + " " + music_warning).strip()
+            )
         if silent_scenes:
             result["warning"] = (
                 "Narration failed for: " + ", ".join(silent_scenes) +
