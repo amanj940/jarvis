@@ -49,6 +49,7 @@ import {
   latLonToVec3,
   subscribeGlobeLayers,
 } from "./GlobeLayers";
+import { startIntelLayer } from "./IntelLayers";
 import {
   WORLD_CITIES,
   shouldShowCityLabels,
@@ -369,6 +370,10 @@ export default function EarthGlobe(props: EarthGlobeProps) {
     () => subscribeGlobeLayers(() => setRegistryLayers(getGlobeLayers())),
     []
   );
+  // Intel layer: live opportunity/bounty markers from the backend.
+  // startIntelLayer() fetches /api/intel/globe and registers the layers;
+  // a failed fetch leaves the previous markers in place and never throws.
+  useEffect(() => startIntelLayer(), []);
   const layers = useMemo(
     () => [...registryLayers, ...propLayers].filter((l) => l.visible !== false),
     [registryLayers, propLayers]
@@ -418,6 +423,11 @@ export default function EarthGlobe(props: EarthGlobeProps) {
   // never per frame, so the frame loop causes no React re-renders.
   const [showCityLabels, setShowCityLabels] = useState(false);
   const showCityLabelsRef = useRef(false);
+  // Marker clicked most recently — shows the intel tooltip pill below.
+  // The pill's own click stops propagation so it never toggles the mic.
+  const [selectedMarker, setSelectedMarker] = useState<GlobeMarker | null>(
+    null
+  );
   const [visibleCityIds, setVisibleCityIds] = useState<string[]>([]);
   const visibleCityIdsRef = useRef<string[]>([]);
   const tmpCityPos = useRef(new THREE.Vector3());
@@ -664,6 +674,7 @@ export default function EarthGlobe(props: EarthGlobeProps) {
             position={[pos.x, pos.y, pos.z]}
             onClick={(e) => {
               e.stopPropagation();
+              setSelectedMarker(marker);
               onMarkerClick?.(marker);
             }}
           >
@@ -672,6 +683,85 @@ export default function EarthGlobe(props: EarthGlobeProps) {
           </mesh>
         );
       })}
+
+      {/* Selected marker — intel tooltip pill (title / score / source) */}
+      {selectedMarker && (
+        <group
+          key={`intel-selected-${selectedMarker.id}`}
+          position={latLonToVec3(
+            selectedMarker.lat,
+            selectedMarker.lon,
+            radius * 1.03
+          )}
+        >
+          <Html
+            center
+            zIndexRange={[40, 0]}
+            style={{ pointerEvents: "auto" }}
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                fontFamily: "ui-monospace, monospace",
+                color: "#e0f2fe",
+                background: "rgba(2, 12, 24, 0.88)",
+                border: "1px solid rgba(125, 211, 252, 0.5)",
+                borderRadius: 8,
+                padding: "6px 8px",
+                maxWidth: 240,
+                whiteSpace: "normal",
+                boxShadow: "0 0 16px rgba(56, 189, 248, 0.35)",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "flex-start",
+                  gap: 8,
+                }}
+              >
+                <div style={{ fontSize: 12, fontWeight: 700 }}>
+                  {(selectedMarker.data?.title as string | undefined) ??
+                    selectedMarker.label ??
+                    selectedMarker.id}
+                </div>
+                <button
+                  aria-label="Close"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSelectedMarker(null);
+                  }}
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    color: "#7dd3fc",
+                    cursor: "pointer",
+                    fontSize: 14,
+                    lineHeight: 1,
+                    padding: 0,
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+              <div
+                style={{ fontSize: 10, color: "#bae6fd", marginTop: 2 }}
+              >
+                {[
+                  selectedMarker.data?.kind === "opportunity"
+                    ? `score ${selectedMarker.data?.score ?? "?"}`
+                    : `severity ${selectedMarker.data?.severity ?? "?"}`,
+                  selectedMarker.data?.source as string | undefined,
+                  selectedMarker.data?.location_name as string | undefined,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </div>
+            </div>
+          </Html>
+        </group>
+      )}
 
       {/* City dots — always on the surface (shared geometry/material) */}
       {cityPositions.map(({ city, pos }) => (
