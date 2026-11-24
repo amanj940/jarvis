@@ -9,6 +9,8 @@ Tables:
   installed_tools    — tools/libs JARVIS knows are installed
   conversations     — recent chat history (rolling)
   project_goals    — per-project goals (Phase 4)
+  entities         — schema-less structured records (audit/fixes db_* tools):
+                    arbitrary collections of named entities with JSON fields
 """
 from __future__ import annotations
 
@@ -77,6 +79,15 @@ CREATE TABLE IF NOT EXISTS project_goals (
 );
 CREATE INDEX IF NOT EXISTS idx_goals_project ON project_goals(project);
 CREATE INDEX IF NOT EXISTS idx_goals_status ON project_goals(status);
+CREATE TABLE IF NOT EXISTS entities (
+    collection TEXT NOT NULL,
+    key TEXT NOT NULL,
+    fields_json TEXT NOT NULL DEFAULT '{}',
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (collection, key)
+);
+CREATE INDEX IF NOT EXISTS idx_entities_collection ON entities(collection);
 """
 
 
@@ -309,3 +320,103 @@ class Memory:
         with self._conn() as c:
             cur = c.execute(f"DELETE FROM {table} WHERE {col}=?", (identifier,))
             return cur.rowcount > 0
+
+    # ---- schema-less entities (audit/fixes db_* tools) ----
+    # One row per (collection, key); fields/tags are JSON so the LLM can
+    # "build a field for anything" without a schema migration.
+    def store_entity(
+        self,
+        collection: str,
+        key: str,
+        data: dict,
+        tags: Iterable[str] | None = None,
+    ) -> dict[str, Any]:
+        """Insert or merge fields into an entity; returns the full field dict."""
+        existing = self.get_entity(collection, key)
+        fields = dict(existing) if existing else {}
+        fields.update(data or {})
+        if tags is None:
+            # Preserve existing tags when the caller did not supply any
+            # (e.g. set_entity_field must not wipe them).
+            with self._conn() as c:
+                row = c.execute(
+                    "SELECT tags_json FROM entities WHERE collection=? AND key=?",
+                    (collection, key),
+                ).fetchone()
+                tags = json.loads(row["tags_json"]) if row else []
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO entities(collection,key,fields_json,tags_json,updated_at)"
+                " VALUES(?,?,?,?,?) ON CONFLICT(collection,key) DO UPDATE SET"
+                " fields_json=excluded.fields_json, tags_json=excluded.tags_json,"
+                " updated_at=excluded.updated_at",
+                (
+                    collection,
+                    key,
+                    json.dumps(fields, ensure_ascii=False),
+                    json.dumps(list(tags or []), ensure_ascii=False),
+                    time.time(),
+                ),
+            )
+        return fields
+
+    def set_entity_field(
+        self, collection: str, key: str, field_name: str, field_value: Any
+    ) -> dict[str, Any]:
+        """Add/update one field on an entity (creating it if missing)."""
+        return self.store_entity(collection, key, {field_name: field_value})
+
+    def get_entity(self, collection: str, key: str) -> dict[str, Any] | None:
+        """Return an entity's fields dict, or None when it does not exist."""
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT fields_json FROM entities WHERE collection=? AND key=?",
+                (collection, key),
+            ).fetchone()
+            return json.loads(row["fields_json"]) if row else None
+
+    def query_entities(
+        self, collection: str = "", query: str = "", tag: str = ""
+    ) -> list[dict[str, Any]]:
+        """Search entities by collection, keyword (key or field values) and/or tag."""
+        with self._conn() as c:
+            rows = c.execute("SELECT * FROM entities ORDER BY updated_at DESC").fetchall()
+        hits: list[dict[str, Any]] = []
+        q = (query or "").lower()
+        for r in rows:
+            if collection and r["collection"] != collection:
+                continue
+            fields = json.loads(r["fields_json"])
+            tags = json.loads(r["tags_json"])
+            if tag and tag not in tags:
+                continue
+            if q:
+                hay = (r["key"] + " " + json.dumps(fields, ensure_ascii=False)).lower()
+                if q not in hay:
+                    continue
+            hits.append(
+                {"collection": r["collection"], "key": r["key"], "fields": fields, "tags": tags}
+            )
+        return hits
+
+    def list_collections(self) -> list[dict[str, Any]]:
+        """One entry per collection: name, entity count, up to 3 sample keys."""
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT collection, COUNT(*) AS n FROM entities GROUP BY collection"
+                " ORDER BY collection"
+            ).fetchall()
+            out: list[dict[str, Any]] = []
+            for r in rows:
+                sample = c.execute(
+                    "SELECT key FROM entities WHERE collection=? ORDER BY updated_at DESC LIMIT 3",
+                    (r["collection"],),
+                ).fetchall()
+                out.append(
+                    {
+                        "collection": r["collection"],
+                        "count": r["n"],
+                        "sample_keys": [s["key"] for s in sample],
+                    }
+                )
+            return out
