@@ -3,6 +3,10 @@
 Safety rules, baked in — not just documented:
 * No network calls to any bounty platform. Program notes are static data.
 * Findings are local SQLite rows, always created as ``draft``.
+* Findings move through draft -> verified -> reported -> triaged ->
+  resolved (or to duplicate / out_of_scope / rejected) via
+  ``bounty_update_finding_status`` — a status change only, never a
+  submission.
 * Anything that changes state is CAUTION (asks for confirmation under the
   default ``confirm`` mode); reads and classification are SAFE.
 * Nothing here submits, publishes, or contacts anyone. Reporting is a
@@ -208,6 +212,45 @@ def register(registry):
             f"#{f['id']} [{f['severity']}] {f['title']} — {f['category']} "
             f"({f['status']}, target {f['target']})"
             for f in findings
+        )
+
+    @tool(
+        name="bounty_update_finding_status",
+        description=(
+            "Move a bounty finding through its lifecycle: draft -> verified -> "
+            "reported -> triaged -> resolved, or to duplicate / out_of_scope / "
+            "rejected. Local DB status change only — never submits or publishes "
+            "anything."
+        ),
+        permission=Permission.CAUTION,
+        parameters={
+            "type": "object",
+            "properties": {
+                "finding_id": {"type": "integer"},
+                "status": {"type": "string", "enum": sorted(VALID_STATUSES)},
+            },
+            "required": ["finding_id", "status"],
+        },
+        preview=lambda a: f"bounty finding #{a.get('finding_id')} -> {a.get('status','')}",
+    )
+    def bounty_update_finding_status(finding_id: int, status: str) -> str:
+        status = (status or "").strip().lower()
+        if status not in VALID_STATUSES:
+            return (
+                f"error: unknown status {status!r} — use one of "
+                f"{sorted(VALID_STATUSES)}. Status NOT changed."
+            )
+        current = store.get_finding(finding_id)
+        if current is None:
+            return f"error: no finding with id {finding_id} — status NOT changed."
+        try:
+            updated = store.update_finding_status(finding_id, status)
+        except ValueError as exc:
+            return f"error: {exc} — status NOT changed."
+        return (
+            f"finding #{finding_id} status: {current['status']} -> "
+            f"{updated['status']} ({updated['title']}). "
+            "Local change only — nothing submitted."
         )
 
     @tool(
