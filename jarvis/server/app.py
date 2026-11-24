@@ -36,6 +36,39 @@ from . import routes, ws
 log = logging.getLogger("jarvis.server")
 
 
+def register_daily_jobs(cfg, registry, task_store, task_scheduler):
+    """Register recurring jobs (daily 09:00 opportunity scan) on boot.
+
+    Called from the server lifespan before the scheduler starts, so the
+    task is persisted and then re-armed by ``TaskScheduler.start()``.
+    Safe to call on every boot: ``register_opportunity_daily_job`` is
+    idempotent and reuses the existing pending task instead of creating
+    a duplicate. Never raises — a failed registration must not take the
+    server down. Returns the created/reused task dict, or ``None``.
+    """
+    if task_store is None or task_scheduler is None:
+        return None
+    # Same toggle as the opportunity tools: absent from config means
+    # enabled; only an explicit ``enabled: false`` disables the scan.
+    toggle = cfg.plugins.get("opportunity") if cfg is not None else None
+    if toggle is not None and not getattr(toggle, "enabled", True):
+        log.info("opportunity daily scan disabled in config — skipping")
+        return None
+    try:
+        from ..plugins.opportunity.jobs import register_opportunity_daily_job
+        from ..plugins.opportunity.leads import LeadsStore
+
+        leads_store = LeadsStore(cfg.abs_path("data/opportunity.db"))
+        task = register_opportunity_daily_job(
+            task_store, task_scheduler, leads_store, registry=registry)
+        log.info("opportunity daily scan registered (task #%s, %s)",
+                 task["id"], task.get("schedule"))
+        return task
+    except Exception as e:  # noqa: BLE001
+        log.warning("opportunity daily scan could not be registered: %s", e)
+        return None
+
+
 def _silence_proactor_reset(loop: asyncio.AbstractEventLoop, context: dict) -> None:
     """Suppress benign Windows Proactor 'connection forcibly closed' tracebacks.
 
@@ -84,6 +117,9 @@ def create_app(
         # Phase 4: start the persistent task scheduler — it re-arms every
         # pending task from SQLite, so tasks survive a restart.
         if task_scheduler is not None:
+            # Daily 09:00 opportunity scan (idempotent — reuses the
+            # existing task on restart instead of creating a duplicate).
+            register_daily_jobs(cfg, registry, task_store, task_scheduler)
             try:
                 task_scheduler.start()
             except Exception as e:  # noqa: BLE001
