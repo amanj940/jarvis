@@ -1,11 +1,13 @@
-/** Session helpers for the zustand store (Phase 2 split of lib/store.ts). */
+/** Session helpers for the zustand store (Phase 2 split of lib/store.ts).
+ * Merge-v2 (2026-11-24): BOOT_GREETING_RE widened to the audit/fixes
+ * version, which also matches the Arabic boot greeting. */
 import type { ChatEntry } from "./types";
 
 let _id = 0;
 export const nextId = () => `${Date.now().toString(36)}-${(_id++).toString(36)}`;
 
 const BOOT_GREETING_RE =
-  /^Good (morning|afternoon|evening), sir\. All systems are online and at your service\.$/;
+  /^(Good (morning|afternoon|evening), sir\. All systems are online and at your service\.|(صباح|مساء) الخير يا سيدي\. جميع الأنظمة متصلة وجاهزة لخدمتك بالكامل\.)$/;
 
 export function isBootGreeting(entry: ChatEntry) {
   return entry.role === "assistant" && BOOT_GREETING_RE.test(entry.text.trim());

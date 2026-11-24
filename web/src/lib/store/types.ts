@@ -60,6 +60,21 @@ export interface SystemStats {
   battery?: { percent: number; plugged: boolean };
 }
 
+export interface VadConfig {
+  silence_threshold: number;
+  silence_timeout_ms: number;
+  min_recording_ms: number;
+  max_recording_ms: number;
+  baseline_window_ms: number;
+  baseline_multiplier: number;
+  barge_in_multiplier: number;
+  barge_in_floor: number;
+  barge_in_sustain_ms: number;
+  stt_coalesce_ms: number;
+  hallucination_filter_enabled: boolean;
+  filler_filter_enabled: boolean;
+}
+
 export interface Health {
   status: string;
   name: string;
@@ -70,6 +85,7 @@ export interface Health {
   agents: string[];
   permission_mode: string;
   voice?: { wake_word: string };
+  vad?: VadConfig;
 }
 
 export interface VoiceProfile {
@@ -78,7 +94,7 @@ export interface VoiceProfile {
   tier: "cinematic" | "british" | "fallback" | "offline";
 }
 
-export type MediaKind = "search" | "news" | "image" | "images" | "video" | "videos" | "page" | "pdf" | "webcam" | "galaxy" | "model3d";
+export type MediaKind = "search" | "news" | "image" | "images" | "video" | "videos" | "page" | "pdf" | "webcam" | "galaxy" | "model3d" | "diagram";
 
 export interface SwarmSubtask {
   id: string;
@@ -123,6 +139,8 @@ export interface MediaItem {
   width?: number;
   height?: number;
   host?: string;
+  // Diagram-specific (Mermaid source)
+  code?: string;
 }
 
 export interface GalaxyNode {

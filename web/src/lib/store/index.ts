@@ -3,6 +3,13 @@
  * Types live in ./types.ts, session helpers in ./session.ts. Import the
  * store itself from here — or from the ../store.ts shim, which re-exports
  * this module so existing imports keep working unchanged.
+ *
+ * Merge-v2 (2026-11-24, single-branch consolidation): ui base + every
+ * audit/fixes-only field/setter/default/persist entry (auth, themeMode,
+ * language, speechLanguage, STT engine/model/endpoint/key, statsLoading,
+ * clearConfirmQueue, clearStats, projectsCount). Shared fields keep the ui
+ * implementation and defaults — see merged/REPORT-store.md for the
+ * field-by-field table and the deliberate divergences.
  */
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
@@ -41,6 +48,11 @@ interface StoreState {
   // connection
   connected: boolean;
   setConnected: (v: boolean) => void;
+  // auth
+  authToken: string | null;
+  setAuthToken: (v: string | null) => void;
+  authConfigured: boolean;
+  setAuthConfigured: (v: boolean) => void;
   // boot
   booted: boolean;
   setBooted: (v: boolean) => void;
@@ -54,6 +66,24 @@ interface StoreState {
   // skin
   skin: SkinName;
   setSkin: (s: SkinName) => void;
+  // theme mode (dark/light)
+  themeMode: "dark" | "light";
+  setThemeMode: (m: "dark" | "light") => void;
+  // language (en/ar) - interface language, manual via Display settings
+  language: "en" | "ar";
+  setLanguage: (l: "en" | "ar") => void;
+  // speech language (en/ar) - manual via Voice settings, independent of UI language
+  speechLanguage: "en" | "ar";
+  setSpeechLanguage: (l: "en" | "ar") => void;
+  // STT Engine & custom model configuration
+  sttEngine: "web_speech" | "backend_whisper" | "custom_stt";
+  setSttEngine: (engine: "web_speech" | "backend_whisper" | "custom_stt") => void;
+  sttModel: string;
+  setSttModel: (model: string) => void;
+  sttCustomEndpoint: string;
+  setSttCustomEndpoint: (endpoint: string) => void;
+  sttCustomApiKey: string;
+  setSttCustomApiKey: (key: string) => void;
   // chat
   chat: ChatEntry[];
   pushChat: (e: ChatEntry) => void;
@@ -75,9 +105,12 @@ interface StoreState {
   confirmQueue: ConfirmRequest[];
   pushConfirm: (c: ConfirmRequest) => void;
   popConfirm: (id: string) => void;
+  clearConfirmQueue: () => void;
   // stats
   stats: SystemStats | null;
+  statsLoading: boolean;         // true until the first successful response arrives
   setStats: (s: SystemStats) => void;
+  clearStats: () => void;        // called after 3 consecutive failures — resets to null
   // health
   health: Health | null;
   setHealth: (h: Health) => void;
@@ -156,6 +189,8 @@ interface StoreState {
   projectsOpen: boolean;
   openProjects: () => void;
   closeProjects: () => void;
+  projectsCount: number | null;   // null = not yet loaded; set after /api/projects
+  setProjectsCount: (n: number) => void;
   // Autonomous Holographic Stage
   holoState: HoloSceneState;
   openHolo: (opts?: Partial<HoloSceneState>) => void;
@@ -188,6 +223,20 @@ export const useStore = create<StoreState>()(persist((set) => ({
   setConnected: (v) => set({ connected: v }),
   booted: false,
   setBooted: (v) => set({ booted: v }),
+  // auth
+  authToken: typeof localStorage !== "undefined" ? localStorage.getItem("jarvis_auth_token") : null,
+  setAuthToken: (v: string | null) => {
+    if (typeof localStorage !== "undefined") {
+      if (v) {
+        try { localStorage.setItem("jarvis_auth_token", v); } catch {}
+      } else {
+        try { localStorage.removeItem("jarvis_auth_token"); } catch {}
+      }
+    }
+    set({ authToken: v });
+  },
+  authConfigured: false,
+  setAuthConfigured: (v: boolean) => set({ authConfigured: v }),
   orbState: "idle",
   setOrb: (s) => set({ orbState: s }),
   audioLevel: 0,
@@ -196,6 +245,27 @@ export const useStore = create<StoreState>()(persist((set) => ({
   setSpeakerAudioLevel: (v) => set({ speakerAudioLevel: v }),
   skin: "reactor",
   setSkin: (s) => set({ skin: s }),
+  themeMode: "dark",
+  setThemeMode: (m) => set({ themeMode: m }),
+  language: "en",
+  setLanguage: (l) => {
+    try {
+      if (typeof window !== "undefined") {
+        localStorage.setItem("jarvis_lang", l);
+      }
+    } catch { /* ignore */ }
+    set({ language: l });
+  },
+  speechLanguage: "ar",
+  setSpeechLanguage: (l) => set({ speechLanguage: l }),
+  sttEngine: "web_speech",
+  setSttEngine: (engine) => set({ sttEngine: engine }),
+  sttModel: "whisper-large-v3-turbo",
+  setSttModel: (model) => set({ sttModel: model }),
+  sttCustomEndpoint: "",
+  setSttCustomEndpoint: (endpoint) => set({ sttCustomEndpoint: endpoint }),
+  sttCustomApiKey: "",
+  setSttCustomApiKey: (key) => set({ sttCustomApiKey: key }),
   chat: [],
   pushChat: (e) =>
     set((st) => {
@@ -240,8 +310,11 @@ export const useStore = create<StoreState>()(persist((set) => ({
   confirmQueue: [],
   pushConfirm: (c) => set((st) => ({ confirmQueue: [...st.confirmQueue, c] })),
   popConfirm: (id) => set((st) => ({ confirmQueue: st.confirmQueue.filter((x) => x.id !== id) })),
+  clearConfirmQueue: () => set({ confirmQueue: [] }),
   stats: null,
-  setStats: (s) => set({ stats: s }),
+  statsLoading: true,
+  setStats: (s) => set({ stats: s, statsLoading: false }),
+  clearStats: () => set({ stats: null }),
   health: null,
   setHealth: (h) => set({ health: h }),
   voiceEnabled: true,
@@ -385,6 +458,8 @@ export const useStore = create<StoreState>()(persist((set) => ({
   projectsOpen: false,
   openProjects: () => set({ projectsOpen: true }),
   closeProjects: () => set({ projectsOpen: false }),
+  projectsCount: null,
+  setProjectsCount: (n) => set({ projectsCount: n }),
   holoState: {
     active: false,
     mode: "anatomy3d",
@@ -512,11 +587,26 @@ export const useStore = create<StoreState>()(persist((set) => ({
     bargeIn:      state.bargeIn,
     wakeEnabled:  state.wakeEnabled,
     shellMode:    state.shellMode,
+    language:     state.language,
+    speechLanguage: state.speechLanguage,
+    sttEngine:    state.sttEngine,
+    sttModel:     state.sttModel,
+    sttCustomEndpoint: state.sttCustomEndpoint,
+    sttCustomApiKey: state.sttCustomApiKey,
   }),
   // After rehydrate, mark streaming chats as finalised (their stream never
   // resumes across a reload) and strip the lightbox/reader overlays.
   onRehydrateStorage: () => (state) => {
     if (!state) return;
+    if (!state.language) {
+      state.language = "ar";
+    }
+    if (!state.speechLanguage) {
+      state.speechLanguage = "ar";
+    }
+    if (!state.sttEngine) {
+      state.sttEngine = "web_speech";
+    }
     if (state.chat?.length) {
       state.chat = cleanupChatHistory(state.chat.map((c) => ({ ...c, streaming: false })));
     }
@@ -528,6 +618,10 @@ export const useStore = create<StoreState>()(persist((set) => ({
       const alive = sessionStorage.getItem(SESSION_ALIVE_KEY);
       sessionStorage.setItem(SESSION_ALIVE_KEY, "1");
       if (!alive) {
+        // MERGE-V2 FIX: af set state.language = "ar" here unconditionally,
+        // which would override a persisted "en" choice on every cold launch.
+        // The conditional default above (if (!state.language)) already covers
+        // the missing-value case, so the override is dropped, not kept.
         const hasSession =
           (state.chat?.length || 0) > 0 ||
           (state.media?.length || 0) > 0 ||

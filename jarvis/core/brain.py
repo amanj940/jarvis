@@ -26,6 +26,21 @@ optional per-attempt ``api_key`` override):
     local. Non-transient 4xx errors (400/404/422, …) do NOT cascade —
     the primary's answer is returned immediately, preserving the
     Phase 4 retry tests' "1 call on HTTP 400" contract.
+
+Merge v2 (audit/fixes -> ui-hud-upgrade, ui kept as base). Ported from af:
+  - per-tier timeouts threaded into the chat methods (CascadeTier.timeout /
+    ttft_timeout were dead fields on ui) + TTFT watchdog on streams;
+  - Gemini endpoints omit frequency/presence penalties (af);
+  - /chat/completions URL normalisation (af);
+  - credential-env key fallback in _resolve_key (af);
+  - unclosed trailing <tool_call>/<thinking> stripping (af);
+  - thin _run_provider_attempt_loop adapter delegating to _dispatch_tier,
+    for the af council.py / subagent.py call sites (returns a bare
+    BrainReply, which is what those call sites use).
+  Deliberately NOT ported: ~/.fcc/.env key loading (machine-specific path),
+  af's cascade-on-4xx (ui's "stop" preserves the Phase 4 contract),
+  af's rotate-a-second-key on 5xx (inner retries already ran 3x; the
+  tier cascade is the better move for a provider-side failure).
 """
 from __future__ import annotations
 
@@ -94,6 +109,37 @@ def _is_local_endpoint(endpoint: str) -> bool:
     return host in {"localhost", "127.0.0.1", "::1"}
 
 
+# Idle gap allowed between stream tokens after the first one (af used
+# 30s; the TTFT watchdog below uses tier.ttft_timeout for the first).
+_STREAM_IDLE_TIMEOUT_S = 30.0
+
+
+def _chat_completions_url(endpoint: str) -> str:
+    """Normalise an endpoint to a /chat/completions URL (af).
+
+    Ui blindly appended "/chat/completions", which doubled it when the
+    endpoint already ended there and produced a wrong URL for a bare
+    Ollama host (http://localhost:11434 -> /chat/completions instead of
+    /v1/chat/completions).
+    """
+    clean_ep = (endpoint or "").rstrip("/")
+    if clean_ep.endswith("/chat/completions"):
+        return clean_ep
+    if clean_ep in ("http://localhost:11434", "http://127.0.0.1:11434"):
+        return clean_ep + "/v1/chat/completions"
+    return clean_ep + "/chat/completions"
+
+
+def _is_gemini_endpoint(endpoint: str) -> bool:
+    """True for Gemini OpenAI-compatible endpoints (af).
+
+    Gemini rejects frequency/presence penalties, so af omitted them
+    there; ui sent them unconditionally.
+    """
+    ep = (endpoint or "").lower()
+    return "generativelanguage.googleapis.com" in ep or "gemini" in ep
+
+
 @dataclass
 class CascadeTier:
     """A prioritized tier in the adaptive failover cascade."""
@@ -145,7 +191,7 @@ class LLMBrain:
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.mc = cfg.model
-        self._client = httpx.AsyncClient(timeout=self.mc.request_timeout_seconds)
+        self._client = httpx.AsyncClient(timeout=self.mc.request_timeout_seconds, trust_env=True)
         # Multi-key rotation (audit/fixes). Keys come from config
         # model.api_keys_pool, then _sync_env_keys() below, then the
         # secure vault when keyring_vault is available (guarded inside
@@ -389,6 +435,22 @@ class LLMBrain:
                 return key
         if provider == self.mc.provider and self.mc.api_key:
             return self.mc.api_key
+        # af fallback: the provider's credential env var, read live so a
+        # key exported after __init__ is still picked up (_sync_env_keys
+        # already loads these at startup; this covers the later case).
+        # A comma-separated / JSON-list value yields its first key.
+        spec = get_provider_spec(provider)
+        if spec is not None and spec.credential_env:
+            env_key = os.environ.get(spec.credential_env, "").strip()
+            if env_key:
+                if env_key.startswith("["):
+                    try:
+                        parsed = json.loads(env_key)
+                        if isinstance(parsed, list) and parsed:
+                            return str(parsed[0]).strip() or None
+                    except json.JSONDecodeError:
+                        pass
+                return env_key.split(",")[0].strip() or None
         return None
 
     def _mark_key(self, method: str, provider: str, key: str | None, **kw: Any) -> None:
@@ -403,6 +465,7 @@ class LLMBrain:
         tool_schemas: list[dict],
         stream: bool = False,
         on_delta: Callable[[str], None] | None = None,
+        max_tokens: int | None = None,
     ) -> tuple[BrainReply, str]:
         """One tier, with up to 2 key-rotation attempts.
 
@@ -427,16 +490,20 @@ class LLMBrain:
                 reply = await self._chat_anthropic(
                     messages, tool_schemas, api_key=active_key,
                     endpoint=endpoint, model=tier.model,
+                    timeout=tier.timeout, max_tokens=max_tokens,
                 )
             elif stream:
                 reply = await self._chat_openai_compatible_stream(
                     messages, tool_schemas, on_delta=on_delta, api_key=active_key,
                     endpoint=endpoint, model=tier.model,
+                    timeout=tier.timeout, ttft_timeout=tier.ttft_timeout,
+                    max_tokens=max_tokens,
                 )
             else:
                 reply = await self._chat_openai_compatible(
                     messages, tool_schemas, api_key=active_key,
                     endpoint=endpoint, model=tier.model,
+                    timeout=tier.timeout, max_tokens=max_tokens,
                 )
 
             status = _brain_error_status(reply)
@@ -479,6 +546,45 @@ class LLMBrain:
             text=f"[brain error] {tier.provider} failed all {max_attempts} attempts",
             raw="",
         ), "cascade"
+
+    async def _run_provider_attempt_loop(
+        self,
+        provider: str,
+        endpoint: str,
+        model: str,
+        messages: list[dict],
+        tool_schemas: list[dict],
+        stream: bool = False,
+        on_delta: Callable[[str], None] | None = None,
+        max_tokens: int | None = None,
+        timeout: float = 15.0,
+        ttft_timeout: float = 5.0,
+    ) -> BrainReply:
+        """Compatibility adapter for the af call sites (``council.py``,
+        ``subagent.py``) — thin delegation to :meth:`_dispatch_tier`,
+        NOT a second attempt loop. Single-provider, single-tier: no
+        cascade across providers (that is ``chat``/``chat_stream``'s job).
+
+        Returns a bare :class:`BrainReply`, matching what those call
+        sites use (``reply.text``). Note af's implementation returned a
+        ``(reply, status_code)`` tuple that its own call sites never
+        unpacked, so the tuple form is deliberately NOT reproduced.
+        """
+        tier = CascadeTier(
+            name="direct",
+            provider=provider,
+            endpoint=endpoint or "",
+            model=model,
+            is_local=provider in ("ollama", "lmstudio")
+            or _is_local_endpoint(endpoint or ""),
+            timeout=timeout,
+            ttft_timeout=ttft_timeout,
+        )
+        reply, _action = await self._dispatch_tier(
+            tier, messages, tool_schemas, stream=stream, on_delta=on_delta,
+            max_tokens=max_tokens,
+        )
+        return reply
 
     # ------------------------------------------------------------------
     def build_system_prompt(self, persona: str, tools_doc: str) -> str:
@@ -584,8 +690,10 @@ class LLMBrain:
         api_key: str | None = None,
         endpoint: str | None = None,
         model: str | None = None,
+        timeout: float | None = None,
+        max_tokens: int | None = None,
     ) -> BrainReply:
-        url = (endpoint or self.mc.endpoint).rstrip("/") + "/chat/completions"
+        url = _chat_completions_url(endpoint or self.mc.endpoint)
         headers = {"Content-Type": "application/json"}
         key = api_key if api_key is not None else self.mc.api_key
         if key:
@@ -601,11 +709,12 @@ class LLMBrain:
             "model": model or self.mc.model,
             "messages": norm_msgs,
             "temperature": self.mc.temperature,
-            "max_tokens": self.mc.max_tokens,
+            "max_tokens": max_tokens or self.mc.max_tokens,
             "stream": False,
-            "frequency_penalty": self.mc.frequency_penalty,
-            "presence_penalty":  self.mc.presence_penalty,
         }
+        if not _is_gemini_endpoint(endpoint or self.mc.endpoint):
+            payload["frequency_penalty"] = self.mc.frequency_penalty
+            payload["presence_penalty"] = self.mc.presence_penalty
         if self.mc.reasoning_effort not in (None, "none", ""):
             payload["reasoning_effort"] = self.mc.reasoning_effort
         if self.mc.native_tool_calls and tool_schemas:
@@ -613,10 +722,13 @@ class LLMBrain:
                 {"type": "function", "function": s} for s in tool_schemas
             ]
 
+        post_kwargs: dict[str, Any] = {}
+        if timeout is not None:
+            post_kwargs["timeout"] = timeout
         resp = None
         for attempt in range(LLM_MAX_ATTEMPTS):
             try:
-                resp = await self._client.post(url, json=payload, headers=headers)
+                resp = await self._client.post(url, json=payload, headers=headers, **post_kwargs)
                 resp.raise_for_status()
                 break
             except httpx.HTTPStatusError as e:
@@ -677,6 +789,9 @@ class LLMBrain:
         api_key: str | None = None,
         endpoint: str | None = None,
         model: str | None = None,
+        timeout: float | None = None,
+        ttft_timeout: float = 5.0,
+        max_tokens: int | None = None,
     ) -> BrainReply:
         """Retry wrapper: re-runs the stream only when it failed BEFORE
         any token was delivered (a mid-stream failure keeps the partial
@@ -695,6 +810,8 @@ class LLMBrain:
             reply = await self._chat_openai_compatible_stream_once(
                 messages, tool_schemas, on_delta=_counting if on_delta else None,
                 api_key=api_key, endpoint=endpoint, model=model,
+                timeout=timeout, ttft_timeout=ttft_timeout,
+                max_tokens=max_tokens,
             )
             if not reply.text.startswith("[brain error]") or delivered:
                 return reply
@@ -713,8 +830,11 @@ class LLMBrain:
         api_key: str | None = None,
         endpoint: str | None = None,
         model: str | None = None,
+        timeout: float | None = None,
+        ttft_timeout: float = 5.0,
+        max_tokens: int | None = None,
     ) -> BrainReply:
-        url = (endpoint or self.mc.endpoint).rstrip("/") + "/chat/completions"
+        url = _chat_completions_url(endpoint or self.mc.endpoint)
         headers = {"Content-Type": "application/json", "Accept": "text/event-stream"}
         key = api_key if api_key is not None else self.mc.api_key
         if key:
@@ -728,11 +848,12 @@ class LLMBrain:
             "model": model or self.mc.model,
             "messages": norm_msgs,
             "temperature": self.mc.temperature,
-            "max_tokens": self.mc.max_tokens,
+            "max_tokens": max_tokens or self.mc.max_tokens,
             "stream": True,
-            "frequency_penalty": self.mc.frequency_penalty,
-            "presence_penalty":  self.mc.presence_penalty,
         }
+        if not _is_gemini_endpoint(endpoint or self.mc.endpoint):
+            payload["frequency_penalty"] = self.mc.frequency_penalty
+            payload["presence_penalty"] = self.mc.presence_penalty
         if self.mc.reasoning_effort not in (None, "none", ""):
             payload["reasoning_effort"] = self.mc.reasoning_effort
         if self.mc.native_tool_calls and tool_schemas:
@@ -744,13 +865,46 @@ class LLMBrain:
         finish_reason: str | None = None
         loop_truncated = False
 
+        stream_kwargs: dict[str, Any] = {}
+        if timeout is not None:
+            stream_kwargs["timeout"] = timeout
+        _ttft_state = {"timed_out": False}
         try:
-            async with self._client.stream("POST", url, json=payload, headers=headers) as resp:
+            async with self._client.stream("POST", url, json=payload, headers=headers, **stream_kwargs) as resp:
                 if resp.status_code >= 400:
                     body = (await resp.aread()).decode("utf-8", "replace")[:500]
                     log.error("LLM stream HTTP %s: %s", resp.status_code, body)
                     return BrainReply(text=f"[brain error] HTTP {resp.status_code}: {body}", raw=body)
-                async for line in resp.aiter_lines():
+
+                async def _lines_with_ttft() -> AsyncIterator[str]:
+                    """Yield SSE lines, enforcing af's TTFT watchdog: the
+                    first payload line must arrive within ``ttft_timeout``,
+                    later lines within ``_STREAM_IDLE_TIMEOUT_S``. A
+                    pre-first-token timeout sets the flag (the caller
+                    returns a TTFT error); a later stall just ends the
+                    stream, keeping the partial text."""
+                    line_iter = resp.aiter_lines()
+                    if not hasattr(line_iter, "__anext__"):
+                        line_iter = line_iter.__aiter__()
+                    first = True
+                    while True:
+                        try:
+                            line = await asyncio.wait_for(
+                                line_iter.__anext__(),
+                                timeout=ttft_timeout if first else _STREAM_IDLE_TIMEOUT_S,
+                            )
+                        except StopAsyncIteration:
+                            return
+                        except asyncio.TimeoutError:
+                            if first:
+                                _ttft_state["timed_out"] = True
+                            return
+                        stripped = line[5:].strip() if line.startswith("data:") else line.strip()
+                        if stripped and stripped != "[DONE]":
+                            first = False
+                        yield line
+
+                async for line in _lines_with_ttft():
                     if not line:
                         continue
                     if line.startswith("data:"):
@@ -797,6 +951,12 @@ class LLMBrain:
                             slot["name"] = fn["name"]
                         if fn.get("arguments"):
                             slot["args"] += fn["arguments"]
+
+            if _ttft_state["timed_out"]:
+                return BrainReply(
+                    text=f"[brain error] TTFT timeout after {ttft_timeout}s",
+                    raw="TTFT timeout",
+                )
         except httpx.HTTPError as e:
             log.error("LLM stream HTTP error: %s", e)
             return BrainReply(text=f"[brain error] {e}", raw=str(e))
@@ -843,6 +1003,8 @@ class LLMBrain:
         api_key: str | None = None,
         endpoint: str | None = None,
         model: str | None = None,
+        timeout: float | None = None,
+        max_tokens: int | None = None,
     ) -> BrainReply:
         url = (endpoint or self.mc.endpoint).rstrip("/") + "/v1/messages"
         headers = {
@@ -866,7 +1028,7 @@ class LLMBrain:
             "model": model or self.mc.model,
             "system": system_text,
             "messages": conv,
-            "max_tokens": self.mc.max_tokens,
+            "max_tokens": max_tokens or self.mc.max_tokens,
             "temperature": self.mc.temperature,
         }
         if self.mc.native_tool_calls and tool_schemas:
@@ -879,10 +1041,13 @@ class LLMBrain:
                 for s in tool_schemas
             ]
 
+        post_kwargs: dict[str, Any] = {}
+        if timeout is not None:
+            post_kwargs["timeout"] = timeout
         resp = None
         for attempt in range(LLM_MAX_ATTEMPTS):
             try:
-                resp = await self._client.post(url, json=payload, headers=headers)
+                resp = await self._client.post(url, json=payload, headers=headers, **post_kwargs)
                 resp.raise_for_status()
                 break
             except httpx.HTTPStatusError as e:
@@ -1054,4 +1219,8 @@ def _strip_artifacts(text: str) -> str:
         text,
     )
     text = THOUGHT_RE.sub("", text)
+    # af: also strip unclosed trailing <tool_call>/<thinking> blocks
+    # (the regexes above only match closed tags).
+    text = re.sub(r"<tool_call>[\s\S]*$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"<thinking>[\s\S]*$", "", text, flags=re.IGNORECASE)
     return text.strip()

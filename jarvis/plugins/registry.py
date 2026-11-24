@@ -20,6 +20,29 @@ all tools; audit/fixes' default of 24 would silently hide ~70 tools
 from the LLM. Pass an explicit ``max_tools`` (and a ``query``) to get
 the ranked subset. ``max_tools=0`` is the documented "no limit" value
 (see tests/test_registry_schemas.py).
+
+Merge 2026-11-24 (audit/fixes vs ui-hud-upgrade, single-branch
+consolidation). Full diff is 6 hunks, 41 changed lines; audit/fixes
+contributes NO unique capability — every symbol it has
+(``__getitem__``/``get_service``, ``ESSENTIAL_CORE_TOOLS``,
+``DOMAIN_TOOLS``, ``ARABIC_TOOL_HINTS``, ``relevant_tools()``,
+``schemas()``/``documentation()``, ``load_all()``, ``reload_all()``)
+already exists in the ui file with identical logic. Hunk decisions:
+  H1 docstring — kept ui (already documents this merge + the
+    ``max_tools=0`` deviation); this paragraph records the hunk log.
+  H2 ``import re`` — kept ui (top-level); dropped audit/fixes'
+    function-local ``import re`` inside ``relevant_tools()`` (same effect).
+  H3 blank-line whitespace after ``__init__``/``__getitem__`` — kept ui
+    (trailing-whitespace cleanup, no semantic change).
+  H4 ``schemas(max_tools=...)`` default — kept ui ``0`` (no limit);
+    rejected audit/fixes ``24`` (would hide ~70 tools from the
+    orchestrator; audit/fixes' own test_06 asserts ``0`` = all tools).
+  H5 ``schemas()`` description — kept ui full ``t.description``;
+    rejected audit/fixes first-line-truncated-to-120-chars form
+    (loses tool detail; revisit only if LLM context becomes an issue).
+  H6 ``documentation(max_tools=...)`` default — kept ui ``0``;
+    rejected audit/fixes ``24``, same reason as H4.
+Result: this file is the ui file verbatim apart from this docstring.
 """
 from __future__ import annotations
 

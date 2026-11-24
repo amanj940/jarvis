@@ -1,11 +1,17 @@
 """Tests for the admin route modules (backend port from audit/fixes).
 
 No network, no real keys. The real ``jarvis.core.key_manager``,
-``jarvis.core.council`` and ``jarvis.core.providers_catalog`` modules do
-not exist on ui-hud-upgrade yet (they arrive with the audit/fixes
-merge), so tests inject stub modules into ``sys.modules`` — the route
+``jarvis.core.council`` and ``jarvis.core.providers_catalog`` modules
+are present in the merged tree (they arrived with the audit/fixes
+merge), so the route handlers import them for real. Tests inject stub
+modules into ``sys.modules`` to verify the stub wiring — the route
 handlers import those modules lazily, exactly like production code.
-A separate set of tests asserts the honest 503 when a module is absent.
+The former "without_X" tests asserted the honest 503 when a module
+was absent; post-merge those modules are on disk, so deleting them
+from ``sys.modules`` no longer simulates absence (``importlib`` just
+re-imports the real module) and the endpoints now answer 200 with
+real payloads. Those tests were rewritten to assert the post-merge
+behaviour instead.
 """
 from __future__ import annotations
 
@@ -171,12 +177,11 @@ def stub_modules(monkeypatch):
     return mods
 
 
-@pytest.fixture()
-def absent_modules(monkeypatch):
-    """Ensure the audit/fixes modules are NOT importable."""
-    for name in ("jarvis.core.key_manager", "jarvis.core.council",
-                 "jarvis.core.providers_catalog"):
-        monkeypatch.delitem(sys.modules, name, raising=False)
+# NOTE: the pre-merge ``absent_modules`` fixture was removed. It deleted
+# the audit/fixes modules from sys.modules to simulate their absence,
+# but post-merge those modules are on disk, so importlib simply
+# re-imports the real ones and the endpoints answer 200. The tests
+# that used it now assert the real-module behaviour instead.
     return None
 
 
@@ -276,13 +281,17 @@ def test_models_list_with_catalog(stub_modules):
     assert data["current"]["model"] == "gemma4:31b-cloud"
 
 
-def test_models_list_without_catalog(absent_modules):
+def test_models_list_with_real_catalog():
+    """Post-merge: the real providers_catalog is on disk (37 providers),
+    so GET /api/models answers 200 with providers_available True."""
     client = make_client(brain=FakeBrain())
     r = client.get("/api/models")
     assert r.status_code == 200
     data = r.json()
-    assert data["providers_available"] is False
-    assert data["providers"] == []
+    assert data["providers_available"] is True
+    ids = {p["id"] for p in data["providers"]}
+    assert ids, "real catalog must list providers"
+    assert {"groq", "omniroute"} <= ids
     assert data["current"]["model"] == "gemma4:31b-cloud"
 
 
@@ -300,11 +309,19 @@ def test_models_verified_with_council(stub_modules):
     assert data["last_benchmark"][0]["model"] == "groq/llama-3"
 
 
-def test_models_verified_without_council(absent_modules):
+def test_models_verified_with_real_council():
+    """Post-merge: the real council module is on disk, so
+    GET /api/models/verified answers 200 (not 503). The verified
+    lineup is empty here because data/model_council.json is not part
+    of the merged tree, so count is 0 — the endpoint is live, the
+    lineup file is simply absent."""
     client = make_client(brain=FakeBrain())
     r = client.get("/api/models/verified")
-    assert r.status_code == 503
-    assert r.json()["available"] is False
+    assert r.status_code == 200
+    data = r.json()
+    assert data["available"] is True
+    assert data["count"] == len(data["verified"]) == 0
+    assert data["last_benchmark"] == []
 
 
 def test_council_members_with_stub(stub_modules):
@@ -316,10 +333,19 @@ def test_council_members_with_stub(stub_modules):
     assert data["count"] == 2
 
 
-def test_council_members_without_module(absent_modules):
+def test_council_members_with_real_module():
+    """Post-merge: the real council module is on disk, so
+    GET /api/council/members answers 200 (not 503). No member is
+    "available" here — FakeBrain has no key_manager, and the verified
+    lineup is empty without data/model_council.json — so the live
+    endpoint returns an empty roster with source 'verified-lineup'."""
     client = make_client(brain=FakeBrain())
     r = client.get("/api/council/members")
-    assert r.status_code == 503
+    assert r.status_code == 200
+    data = r.json()
+    assert data["available"] is True
+    assert data["source"] == "verified-lineup"
+    assert data["count"] == len(data["members"]) == 0
 
 
 def test_council_benchmark_and_fast(stub_modules):
@@ -402,10 +428,19 @@ def test_keys_list_masked_only(stub_modules):
     assert r.json()["has_active_key"]["groq"] is True
 
 
-def test_keys_list_without_module(absent_modules):
+def test_keys_list_with_real_key_manager():
+    """Post-merge: the real key_manager module is on disk, so
+    GET /api/keys answers 200 (not 503). The pool is empty (fresh
+    KeyManager, no keys configured), so no provider has masked keys
+    and no provider has an active key."""
     client = make_client(brain=FakeBrain())
     r = client.get("/api/keys")
-    assert r.status_code == 503
+    assert r.status_code == 200
+    data = r.json()
+    assert data["available"] is True
+    assert data["providers"] == {}
+    assert data["has_active_key"], "key list must report per-provider status"
+    assert all(v is False for v in data["has_active_key"].values())
 
 
 def test_keys_add_and_duplicate(stub_modules):

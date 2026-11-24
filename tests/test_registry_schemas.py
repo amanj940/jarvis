@@ -1,15 +1,18 @@
 """Tests for PluginRegistry.schemas always_include pinning, the get/get_service
-name split, and ESSENTIAL_CORE_TOOLS surviving schema selection.
+name split, and ESSENTIAL_CORE_TOOLS pinning essential tools.
 
 Regression coverage for the bug where computer-use tools were evicted from
 the LLM tool list mid-chain, causing "unknown tool" failures on later hops.
 
-Merge note: the audit/fixes original asserted on the unified 'computer'
-tool, which does not exist on ui-hud-upgrade (no computer-use plugin in
-this tree yet — ESSENTIAL_CORE_TOOLS still lists it for when one lands).
-The assertions below use 'web_search' instead: an essential tool that
-IS registered here, so the test checks the same property (an essential
-tool survives schema selection) against this tree.
+NOTE (2026-11-24, merge): no plugin anywhere in the repo registers a tool
+named "computer" — the unified computer-use plugin was never landed; only
+the ESSENTIAL_CORE_TOOLS entry and the original version of these tests were
+written. The behavioural assertions below therefore use tools that ARE
+registered and essential (``run_shell``) instead of ``computer``.
+``ESSENTIAL_CORE_TOOLS`` still lists ``computer`` (and ``remember`` /
+``recall`` / ``desktop_*`` / ``chrome_open_url``) as design intent for
+that future plugin — see test_01's intent assertion. The missing
+unified computer-tool plugin itself remains a gap for future work.
 """
 import unittest
 
@@ -34,11 +37,22 @@ class TestRegistrySchemas(unittest.TestCase):
         self.reg.load_all()
 
     def test_01_computer_is_essential_and_selected_by_default(self):
-        """An essential tool must survive schema selection even for
-        an unrelated query, because it is in ESSENTIAL_CORE_TOOLS."""
-        self.assertIn("web_search", PluginRegistry.ESSENTIAL_CORE_TOOLS)
-        names = {s["name"] for s in self.reg.schemas(query="Find the price on this tab and sign up")}
-        self.assertIn("web_search", names)
+        """An essential tool must survive schema selection even for an
+        unrelated query, because it is in ESSENTIAL_CORE_TOOLS.
+
+        Uses ``run_shell``: it is both essential AND actually
+        registered. (The original assertion used ``computer``, but no
+        plugin registers a ``computer`` tool — see the module docstring.
+        ``computer`` remains in ESSENTIAL_CORE_TOOLS only as design
+        intent for the future unified computer-use plugin.)
+        """
+        # Design intent is unchanged: the future computer tool stays listed.
+        self.assertIn("computer", PluginRegistry.ESSENTIAL_CORE_TOOLS)
+        # Behavioural check on a tool that really exists:
+        self.assertIn("run_shell", PluginRegistry.ESSENTIAL_CORE_TOOLS)
+        names = {s["name"] for s in self.reg.schemas(
+            query="Find the price on this tab and sign up", max_tools=5)}
+        self.assertIn("run_shell", names)
 
     def test_02_always_include_pins_tool_with_small_budget(self):
         """always_include tools are pinned even when max_tools is tiny, and
@@ -70,9 +84,11 @@ class TestRegistrySchemas(unittest.TestCase):
         falls through to services)."""
         self.assertIsNone(self.reg.get("definitely_not_a_tool"))
         self.assertIsNone(self.reg.get("memory"))  # service name is NOT a tool
-        tool = self.reg.get("web_search")
+        # 'computer' was asserted here originally, but no plugin registers
+        # it (see module docstring); resolve a real registered tool instead.
+        tool = self.reg.get("run_shell")
         self.assertIsNotNone(tool)
-        self.assertEqual(tool.name, "web_search")
+        self.assertEqual(tool.name, "run_shell")
 
     def test_05_get_service_resolves_services(self):
         """get_service() resolves registered services with optional default."""

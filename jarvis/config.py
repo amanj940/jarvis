@@ -15,8 +15,10 @@ inline `persona:` in `config.yaml` still works and takes precedence.
 from __future__ import annotations
 
 import os
+import re
+import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import yaml
 from dotenv import load_dotenv
@@ -60,10 +62,68 @@ class ModelConfig(BaseModel):
     fallback_endpoint: str = ""  # blank → provider catalog default
     # How long a 429 rate-limited key stays in cooldown before reuse.
     key_cooldown_seconds: float = 60.0  # mirrors config.yaml
+    # af-only (audit/fixes). No reader in the merged tree uses these yet;
+    # they preserve the af config surface so an af config.yaml keeps
+    # parsing instead of being silently dropped.
+    # Multi-key support: list of env var names or empty for single key mode.
+    api_key_envs: list[str] = Field(default_factory=list)
+    # Fallback provider chain (e.g., ["groq", "gemini", "openai_compatible"]).
+    fallback_providers: list[str] = Field(default_factory=list)
+    # Key rotation settings.
+    key_rotation_enabled: bool = True
 
     @property
     def api_key(self) -> str:
         return os.environ.get(self.api_key_env, "")
+
+    @property
+    def api_keys(self) -> list[str]:
+        """Get all API keys for this provider (multi-key support, af)."""
+        # 1. From explicit pool in config
+        prov = self.provider.lower().strip()
+        if self.api_keys_pool and prov in self.api_keys_pool:
+            pool_keys: list[str] = []
+            for k in self.api_keys_pool[prov]:
+                k_str = str(k).strip()
+                if not k_str or k_str.startswith(":::"):
+                    continue
+                if k_str.startswith("${") and k_str.endswith("}"):
+                    var_name = k_str[2:-1].split(":-")[0].strip()
+                    val = os.environ.get(var_name, "").strip()
+                    if val:
+                        for sub_k in val.split(","):
+                            sub_clean = sub_k.strip()
+                            if sub_clean and not sub_clean.startswith(":::"):
+                                pool_keys.append(sub_clean)
+                else:
+                    pool_keys.append(k_str)
+            if pool_keys:
+                return pool_keys
+
+        # 2. From multiple env vars if configured
+        if self.api_key_envs:
+            keys = []
+            for env_var in self.api_key_envs:
+                key = os.environ.get(env_var, "").strip()
+                if key:
+                    keys.append(key)
+            if keys:
+                return keys
+
+        # 3. From single key env (supports single key, comma-separated keys, or json array)
+        raw = os.environ.get(self.api_key_env, "").strip()
+        if not raw:
+            return []
+        if raw.startswith("[") and raw.endswith("]"):
+            import json
+            try:
+                arr = json.loads(raw)
+                return [str(k).strip() for k in arr if str(k).strip()]
+            except Exception:
+                pass
+        if "," in raw:
+            return [k.strip() for k in raw.split(",") if k.strip()]
+        return [raw]
 
 
 class ImageModelConfig(BaseModel):
@@ -130,6 +190,11 @@ class AssistantConfig(BaseModel):
     # Default is the Arabic persona; set A.persona_file: persona/jarvis.md
     # for English.
     persona_file: str = "persona/jarvis-ar.md"
+    # Domain doctrines (af) injected into the system prompt ONLY when the
+    # user turn matches the domain — keeps the base persona lean. No
+    # reader in the merged tree uses these yet.
+    cyberlab_doctrine: str = ""
+    model_ops_doctrine: str = ""
 
 
 class MissionConfig(BaseModel):
@@ -169,8 +234,76 @@ class UltimateConfig(BaseModel):
     # — Intuitive —
     proactive_suggestions: bool = True
 
+    # — Hop Budget & Loop Control (audit/fixes) —
+    max_tool_hops: int = 30
+    max_planned_tool_hops: int = 50
+    stagnation_threshold: int = 3
+
     # — Gorgeous (frontend reads these via /health) —
     reactive_visuals: bool = True
+
+
+class HomeAssistantConfig(BaseModel):
+    url: str = ""
+    token: str = ""
+
+
+class EmailConfig(BaseModel):
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_pass: str = ""
+
+
+class TelegramConfig(BaseModel):
+    bot_token: str = ""
+    chat_id: str = ""
+    default_chat_id: str = ""
+    enabled: bool = False
+
+
+class FacebookConfig(BaseModel):
+    page_id: str = ""
+    page_access_token: str = ""
+    enabled: bool = False
+
+
+class YouTubeConfig(BaseModel):
+    client_id: str = ""
+    client_secret: str = ""
+    refresh_token: str = ""
+    channel_id: str = ""
+    enabled: bool = False
+
+
+class CalendarConfig(BaseModel):
+    ical_url: str = ""
+
+
+class InstagramConfig(BaseModel):
+    access_token: str = ""
+    user_id: str = ""          # Instagram Business/Creator user ID
+    enabled: bool = False
+
+
+class TikTokConfig(BaseModel):
+    client_key: str = ""
+    client_secret: str = ""
+    access_token: str = ""
+    open_id: str = ""          # TikTok user open_id from OAuth
+    enabled: bool = False
+
+
+class IntegrationsConfig(BaseModel):
+    home_assistant: HomeAssistantConfig = Field(default_factory=HomeAssistantConfig)
+    email: EmailConfig = Field(default_factory=EmailConfig)
+    telegram: TelegramConfig = Field(default_factory=TelegramConfig)
+    facebook: FacebookConfig = Field(default_factory=FacebookConfig)
+    youtube: YouTubeConfig = Field(default_factory=YouTubeConfig)
+    instagram: InstagramConfig = Field(default_factory=InstagramConfig)
+    tiktok: TikTokConfig = Field(default_factory=TikTokConfig)
+    social_platforms: dict = Field(default_factory=dict)
+    calendar: CalendarConfig = Field(default_factory=CalendarConfig)
 
 
 class VoiceConfig(BaseModel):
@@ -203,6 +336,20 @@ class VoiceConfig(BaseModel):
     edge_voice: str = "ar-SA-HamedNeural"  # Hamed Neural (Saudi Arabic) — default voice
     edge_rate: str = "-6%"
     edge_pitch: str = "+0Hz"
+    # af-only voice fields (ui values kept where they conflict: provider
+    # "auto", edge_rate "-6%", piper_enabled True, piper_length_scale 1.0).
+    edge_voice_en: str = "en-GB-ThomasNeural"
+    chat_language: str = "ar"  # "en" or "ar" - strict language for TTS & STT
+    stt_provider: str = "auto"  # auto | web_speech | groq | openai | custom | local
+    stt_model: str = "whisper-large-v3-turbo"
+    stt_custom_endpoint: str = ""
+    stt_custom_api_key: str = ""
+
+    # pyttsx3 (System TTS - espeak/sapi)
+    pyttsx3_enabled: bool = True
+    pyttsx3_voice: Optional[str] = None
+    pyttsx3_rate: int = 150
+    pyttsx3_volume: float = 0.9
     # Piper (community JARVIS model, closest to Paul Bettany).
     # ENGLISH-ONLY model — Arabic text skips Piper (see jarvis/models/tts.py).
     piper_enabled: bool = True  # mirrors config.yaml
@@ -223,6 +370,37 @@ class VoiceConfig(BaseModel):
     )
 
 
+class VadConfig(BaseModel):
+    """Voice Activity Detection (VAD) configuration.
+
+    Controls both frontend (browser MediaRecorder) and backend (Silero VAD in faster-whisper)
+    voice activity detection to reduce false positives from background noise.
+    """
+    # Frontend VAD parameters (JarvisMic in voice.ts)
+    silence_threshold: float = 0.08           # Floor below which audio counts as silence (was 0.05)
+    silence_timeout_ms: int = 700             # Silence this long = end of utterance (was 600)
+    min_recording_ms: int = 600               # Ignore clips shorter than this (was 500)
+    max_recording_ms: int = 8000              # Force-flush clips longer than this (was 6000)
+    baseline_window_ms: int = 1200            # Learn ambient noise level over this window (was 800)
+    baseline_multiplier: float = 2.2          # Require level > baseline * mult to count as voice (was 1.8)
+
+    # Backend Silero VAD parameters (faster-whisper)
+    silero_threshold: float = 0.5             # Silero VAD threshold 0-1 (was 0.45)
+    silero_min_silence_duration_ms: int = 500 # Min silence duration for Silero (was 400)
+
+    # Barge-in (interrupt JARVIS while speaking) parameters
+    barge_in_multiplier: float = 3.5          # Voice must exceed baseline * this (was 3.2)
+    barge_in_floor: float = 0.15              # And clear this absolute level (was 0.12)
+    barge_in_sustain_ms: int = 250            # For this long continuously (was 180)
+
+    # STT post-processing
+    stt_coalesce_ms: int = 500                # Buffer submissions this long, join consecutive clips (was 350)
+
+    # Hallucination filtering (applied both frontend and backend)
+    hallucination_filter_enabled: bool = True
+    filler_filter_enabled: bool = True
+
+
 class Config(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True, protected_namespaces=())
 
@@ -240,7 +418,9 @@ class Config(BaseModel):
     agents: dict[str, PluginToggle] = Field(default_factory=dict)
     mission: MissionConfig = Field(default_factory=MissionConfig)
     voice: VoiceConfig = Field(default_factory=VoiceConfig)
+    vad: VadConfig = Field(default_factory=VadConfig)
     ultimate: UltimateConfig = Field(default_factory=UltimateConfig)
+    integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
 
     project_root: Path = PROJECT_ROOT
 
@@ -298,3 +478,156 @@ def load_config(path: Path | None = None) -> Config:
     cfg = Config(**raw)
     _load_persona_text(cfg_path, raw, cfg)
     return cfg
+
+
+# ── ${VAR} expansion (audit/fixes) ────────────────────────────────────
+# Regex to match ${VAR} or ${VAR:-default} patterns
+_ENV_VAR_PATTERN = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)(?::-([^}]*))?\}")
+
+
+def _expand_env_vars(value: Any, env: dict[str, str]) -> Any:
+    """Recursively expand ${VAR} and ${VAR:-default} in strings using provided env dict.
+
+    Missing variables resolve to empty string (or the provided default).
+    Ported from audit/fixes; NOT wired into load_config — KeyManager
+    already expands ${VAR} refs in model.api_keys_pool at brain init,
+    and expanding every yaml string at load time would put resolved
+    secrets into the Config object (visible to /api/config).
+    """
+    if isinstance(value, str):
+        def repl(m: re.Match) -> str:
+            var = m.group(1)
+            default = m.group(2) if m.group(2) is not None else ""
+            return env.get(var, default)
+        # Apply repeatedly until no more matches (handles nested references)
+        prev = None
+        curr = value
+        while prev != curr:
+            prev = curr
+            curr = _ENV_VAR_PATTERN.sub(repl, curr)
+        return curr
+    elif isinstance(value, dict):
+        return {k: _expand_env_vars(v, env) for k, v in value.items()}
+    elif isinstance(value, list):
+        return [_expand_env_vars(v, env) for v in value]
+    return value
+
+
+# ── Atomic YAML persistence utility (audit/fixes) ─────────────────────
+# In-process lock to prevent concurrent writes from corrupting the file.
+# Note: This does NOT protect against multiple processes (e.g., running
+# multiple JARVIS instances). For multi-process safety, a file lock or
+# external coordination would be required.
+_yaml_write_lock = threading.Lock()
+
+
+def atomic_yaml_write(config_path: Path, data: dict) -> None:
+    """Atomically write YAML data to a configuration file.
+
+    This function provides:
+    1. Atomic replacement: writes to a temp file, then renames over the target
+    2. Data integrity: fsync before rename to ensure data is on disk
+    3. In-process concurrency protection: threading.Lock prevents concurrent writes
+    4. Permission preservation: copies permissions from the original file
+    5. Cleanup: removes abandoned temp files on failure
+
+    Args:
+        config_path: Path to the target configuration file
+        data: Dictionary to serialize as YAML
+
+    Raises:
+        OSError: If the write operation fails
+        ValueError: If config_path does not exist
+
+    Note:
+        This does NOT protect against multiple processes. If you need
+        multi-process safety, implement a file lock (e.g., fcntl.lockf
+        on Unix, msvcrt.locking on Windows) or use an external coordination
+        mechanism.
+    """
+    if not config_path.exists():
+        raise ValueError(f"Configuration file does not exist: {config_path}")
+
+    # Acquire in-process lock to prevent concurrent writes
+    with _yaml_write_lock:
+        # Get original file permissions if they exist
+        try:
+            original_mode = config_path.stat().st_mode
+        except OSError:
+            original_mode = None
+
+        # Create temp file in the same directory (ensures same filesystem)
+        temp_path = config_path.with_suffix(config_path.suffix + ".tmp")
+
+        try:
+            # Write to temp file
+            with temp_path.open("w", encoding="utf-8") as f:
+                yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
+                # Flush to ensure data is written to OS buffer
+                f.flush()
+                # fsync to ensure data is on physical disk
+                os.fsync(f.fileno())
+
+            # Preserve original permissions
+            if original_mode is not None:
+                temp_path.chmod(original_mode)
+
+            # Atomic rename (POSIX guarantees this is atomic)
+            temp_path.replace(config_path)
+
+        except Exception as e:
+            # Clean up temp file on failure
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
+            raise OSError(f"Failed to atomically write {config_path}: {e}") from e
+
+
+def atomic_text_write(target_path: Path, text: str, default_mode: int = 0o600) -> None:
+    """Atomically write text data to a target file.
+
+    Provides:
+    1. Atomic replacement via rename over the target.
+    2. fsync to physical storage before rename.
+    3. Threading lock and fcntl lock for concurrency safety.
+    4. Permission preservation (or default_mode 0600 for secrets).
+    5. Clean error recovery and temp-file removal.
+    """
+    target_path = Path(target_path)
+    parent = target_path.parent
+    parent.mkdir(parents=True, exist_ok=True)
+
+    with _yaml_write_lock:
+        try:
+            original_mode = target_path.stat().st_mode
+        except OSError:
+            original_mode = default_mode
+
+        temp_path = parent / f".{target_path.name}.tmp.{os.getpid()}_{threading.get_ident()}"
+        try:
+            with temp_path.open("w", encoding="utf-8") as f:
+                try:
+                    import fcntl
+                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                except (ImportError, OSError):
+                    pass
+                f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
+
+            if original_mode is not None:
+                try:
+                    temp_path.chmod(original_mode)
+                except OSError:
+                    pass
+
+            temp_path.replace(target_path)
+        except Exception as e:
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
+            raise OSError(f"Failed to atomically write {target_path}: {e}") from e

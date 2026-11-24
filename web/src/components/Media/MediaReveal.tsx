@@ -44,6 +44,7 @@ const KIND_READOUT: Record<MediaKind, string> = {
   webcam:  "◢ FEED ONLINE",
   galaxy:  "◢ NEURAL MAP",
   model3d: "◢ MODEL ASSEMBLED",
+  diagram: "◢ DIAGRAM RENDERED",
 };
 
 export default function MediaReveal({
