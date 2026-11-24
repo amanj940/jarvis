@@ -8,6 +8,10 @@ __pycache__/
 .claude/settings.local.json
 data/memory.db
 data/memory.db-*
+# Geo/Atlas runtime state (built locally by scripts/seed_geo.py — never commit)
+data/geo.sqlite
+data/geo.sqlite-*
+data/geo-seed/
 data/logs/
 data/backups/
 data/project_backups/
@@ -45,4 +49,3 @@ data/research/
 
 # Runtime scratch (HuggingFace cache probes, temp downloads)
 data/tmp/
-data/youtube_token.json
