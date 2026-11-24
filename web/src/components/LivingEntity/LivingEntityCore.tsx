@@ -33,6 +33,7 @@ import {
 import FloatingHoloHUD from "./FloatingHoloHUD";
 import HudRings from "./HudRings";
 import EarthGlobe, { GlobeErrorBoundary } from "../Globe/EarthGlobe";
+import HoloShapes from "../Globe/HoloShapes";
 import {
   GLOBE_ZOOM_MAX_DISTANCE,
   GLOBE_ZOOM_MIN_DISTANCE,
@@ -229,7 +230,19 @@ export default function LivingEntityCore() {
   const [tabHidden, setTabHidden] = useState(false);
   // If the Earth globe ever fails to render, fall back to the old orb.
   const [globeFailed, setGlobeFailed] = useState(false);
+  // Ambient holo shapes around the globe (default ON). Dispatch a
+  // `jarvis:toggle-holo` window event (voice command, HUD button, console)
+  // to show/hide them. If the holo layer itself ever throws, it hides
+  // instead of taking the globe down with it.
+  const [holoVisible, setHoloVisible] = useState(true);
+  const [holoFailed, setHoloFailed] = useState(false);
   const reducedMotion = useReducedMotion();
+
+  useEffect(() => {
+    const onToggleHolo = () => setHoloVisible((v) => !v);
+    window.addEventListener("jarvis:toggle-holo", onToggleHolo);
+    return () => window.removeEventListener("jarvis:toggle-holo", onToggleHolo);
+  }, []);
 
   // Tab visibility: pause render loop when tab is hidden
   useEffect(() => {
@@ -286,6 +299,14 @@ export default function LivingEntityCore() {
           ) : (
             <GlobeErrorBoundary onError={() => setGlobeFailed(true)}>
               <EarthGlobe reducedMotion={reducedMotion} />
+            </GlobeErrorBoundary>
+          )}
+          {/* Ambient holo shapes around the globe (not the fallback orb —
+              the morph engine already IS the holo layer there). Own error
+              boundary so a holo failure hides the layer, never the globe. */}
+          {!globeFailed && holoVisible && !holoFailed && (
+            <GlobeErrorBoundary onError={() => setHoloFailed(true)}>
+              <HoloShapes reducedMotion={reducedMotion} />
             </GlobeErrorBoundary>
           )}
           <OrbitControls
