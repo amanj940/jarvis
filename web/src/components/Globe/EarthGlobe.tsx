@@ -168,6 +168,7 @@ export async function fetchGeoCities(): Promise<GeoCity[] | null> {
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, "-"),
       name: c.name,
+      country: c.country_name || c.country_code || "",
       lat: c.lat,
       lon: c.lon,
       country_code: c.country_code,

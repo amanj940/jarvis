@@ -64,7 +64,7 @@ function add3DBuildingsLayer(map: MapLibreMapInstance): void {
   if (map.getLayer("street-map-3d-buildings")) return;
   const layers = map.getStyle()?.layers ?? [];
   const labelLayer = layers.find(
-    (l) =>
+    (l: any) =>
       l.type === "symbol" &&
       (l as { layout?: { "text-field"?: unknown } }).layout?.["text-field"] !==
         undefined,
@@ -127,7 +127,7 @@ export default function StreetMapWindow({ lat, lon, name }: StreetMapWindowProps
       if (cancelled) return;
       add3DBuildingsLayer(map);
     });
-    map.on("error", (e) => {
+    map.on("error", (e: any) => {
       if (cancelled) return;
       const msg = (e as { error?: { message?: string } }).error?.message;
       if (msg) setLoadError(msg);
