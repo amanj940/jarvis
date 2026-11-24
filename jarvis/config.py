@@ -48,6 +48,18 @@ class ModelConfig(BaseModel):
     # cached bytecode that still references it; current brain.py does not
     # send it (frequency_penalty is auto-translated by Ollama server-side).
     repeat_penalty: float = 1.0
+    # Multi-key rotation + provider failover cascade (audit/fixes, merged
+    # into the Phase 2 brain). All optional; defaults keep single-provider
+    # behaviour. api_keys_pool maps provider -> list of keys; ${VAR} refs
+    # and comma-separated values are expanded by KeyManager.
+    api_keys_pool: dict[str, list[str]] = Field(default_factory=dict)
+    # Tier 2 of the cascade: tried when the primary provider (and the
+    # fastest verified cloud model, when data/models.db exists) fail.
+    fallback_provider: str = "openrouter"  # mirrors config.yaml
+    fallback_model: str = "deepseek/deepseek-chat"  # mirrors config.yaml
+    fallback_endpoint: str = ""  # blank → provider catalog default
+    # How long a 429 rate-limited key stays in cooldown before reuse.
+    key_cooldown_seconds: float = 60.0  # mirrors config.yaml
 
     @property
     def api_key(self) -> str:
