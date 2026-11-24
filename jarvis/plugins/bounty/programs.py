@@ -12,6 +12,8 @@ PROGRAMS: list[dict] = [
         "platform": "hackerone",
         "name": "HackerOne",
         "url": "https://hackerone.com",
+        "directory_url": "https://hackerone.com/directory",
+        "query": "site:hackerone.com/directory bug bounty program",
         "notes": (
             "Largest managed bounty platform. Programs publish a scope page "
             "listing in-scope assets and out-of-scope items; rewards are set "
@@ -28,6 +30,8 @@ PROGRAMS: list[dict] = [
         "platform": "bugcrowd",
         "name": "Bugcrowd",
         "url": "https://bugcrowd.com",
+        "directory_url": "https://bugcrowd.com/programs",
+        "query": "site:bugcrowd.com/programs bug bounty",
         "notes": (
             "Crowdsourced bounty platform with public and private programs. "
             "Each program brief defines scope, safe-harbour terms, and reward "
@@ -43,6 +47,8 @@ PROGRAMS: list[dict] = [
         "platform": "intigriti",
         "name": "Intigriti",
         "url": "https://intigriti.com",
+        "directory_url": "https://intigriti.com/programs",
+        "query": "site:intigriti.com/programs bug bounty",
         "notes": (
             "European bounty platform. Programs define scope and severity "
             "using the Intigriti triage standard; researcher identity "
@@ -58,6 +64,8 @@ PROGRAMS: list[dict] = [
         "platform": "yeswehack",
         "name": "YesWeHack",
         "url": "https://yeswehack.com",
+        "directory_url": "https://yeswehack.com/programs",
+        "query": "site:yeswehack.com/programs bug bounty",
         "notes": (
             "European platform with public programs and private bug-bounty "
             "campaigns. Scope and rules are per program; some programs run "
@@ -83,3 +91,24 @@ def program_notes(platform: str) -> dict | None:
 
 def list_platforms() -> list[str]:
     return [p["platform"] for p in PROGRAMS]
+
+
+def sync_platform_specs() -> list[dict]:
+    """Sync specs derived from :data:`PROGRAMS` — the single source of
+    truth for the bounty platform list.
+
+    ``programs_sync`` used to keep its own copy of this list (same four
+    platforms, different keys); it now calls this instead, so adding a
+    platform here automatically adds it to the sync. Returns fresh
+    dicts with only the keys the sync needs: ``platform``, ``name``,
+    ``directory_url`` and ``query``.
+    """
+    return [
+        {
+            "platform": p["platform"],
+            "name": p["name"],
+            "directory_url": p["directory_url"],
+            "query": p["query"],
+        }
+        for p in PROGRAMS
+    ]
