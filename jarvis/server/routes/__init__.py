@@ -12,6 +12,9 @@ Was a single 1,434-line ``routes.py``; now::
     routes/geo.py     — /geo/* (atlas: countries, cities, weather, geocode)
     routes/shopify_webhooks.py — /webhooks/shopify (Shopify HMAC webhooks)
     routes/youtube_oauth.py — /youtube/oauth/* (OAuth flow: status, start, callback; draft-only)
+    routes/mcp.py — /mcp/* (MCP server list/status/test)
+    routes/integrations.py — /integrations/* (integration list + connection test)
+    routes/plugins.py — /plugins/* (plugin state + toggle)
 
 ``router`` below aggregates all four sub-routers, so
 ``app.include_router(routes.router, prefix="/api")`` in server/app.py and
@@ -32,6 +35,9 @@ from .system import install_log_handler, router as system_router
 from .voice import router as voice_router
 from .youtube_oauth import router as youtube_oauth_router
 from .shopify_webhooks import router as shopify_webhooks_router
+from .mcp import router as mcp_router
+from .integrations import router as integrations_router
+from .plugins import router as plugins_router
 
 router = APIRouter()
 router.include_router(system_router)
@@ -42,6 +48,9 @@ router.include_router(intel_router)
 router.include_router(geo_router)
 router.include_router(youtube_oauth_router)
 router.include_router(shopify_webhooks_router)
+router.include_router(mcp_router)
+router.include_router(integrations_router)
+router.include_router(plugins_router)
 
 __all__ = [
     "router",
