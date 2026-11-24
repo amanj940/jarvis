@@ -43,6 +43,32 @@ from .common import _services
 router = APIRouter()
 _stt_log = logging.getLogger("jarvis.stt")
 
+# Max STT upload size (worker L hardening). No pre-existing size
+# convention was found in the repo, so 25 MB: generous for a voice
+# clip (minutes of webm/opus audio) while bounding memory/disk.
+# Enforcement is two-layered: (1) the Content-Length header is
+# checked BEFORE any body is read, so an obviously oversized upload
+# is rejected with 413 immediately; (2) the body is then read in
+# 1 MB chunks and aborted the moment the total passes the cap, so
+# the handler never buffers an unbounded body into memory.
+# RESIDUAL LIMITATION: Starlette's multipart parser may spool the
+# uploaded file before this handler runs, so a client that lies about
+# Content-Length could still cost the server a spooled temp file up
+# to the framework's spool limit. A full pre-framework gate would
+# need ASGI middleware / a server-level client_max_body_size — noted
+# here, not silently claimed as solved.
+MAX_STT_BYTES = 25 * 1024 * 1024
+_STT_READ_CHUNK = 1024 * 1024
+
+
+def _stt_too_large_response(received: int | None = None) -> JSONResponse:
+    detail = f"audio exceeds {MAX_STT_BYTES // (1024 * 1024)} MB limit"
+    if received is not None:
+        detail += f" (received {received} bytes)"
+    return JSONResponse({"text": "", "error": detail,
+                         "code": "payload_too_large"}, status_code=413)
+
+
 @router.post("/stt")
 async def speech_to_text(request: Request, audio: UploadFile = File(...), language: str | None = None):
     """Receive audio from browser MediaRecorder, transcribe with Whisper.
@@ -50,13 +76,38 @@ async def speech_to_text(request: Request, audio: UploadFile = File(...), langua
     Language: ``?language=`` override, else ``voice.stt_language``
     (Phase 4 default ``"ar"`` — see jarvis/models/whisper.py
     ``build_transcribe_kwargs``). No hardcoded ``language="en"`` remains.
+
+    Uploads over MAX_STT_BYTES (25 MB) are rejected with 413.
     """
     cfg, orch, *_ = _services(request)
     vs = getattr(orch, "voice_state", None)
     if vs is not None:
         vs.begin_listening("stt request")
+    # Layer 1: reject on Content-Length before reading any body.
+    # The 1 MB slack is the multipart framing overhead: Content-Length
+    # covers the whole multipart body, not just the audio, so a clip
+    # exactly at the cap must not be rejected for its framing bytes.
+    # The chunked check below still enforces the exact audio cap.
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        try:
+            if int(declared) > MAX_STT_BYTES + _STT_READ_CHUNK:
+                return _stt_too_large_response(int(declared))
+        except ValueError:
+            pass  # malformed header: fall through to the chunked check
     import asyncio
-    data = await audio.read()
+    # Layer 2: chunked read, abort past the cap (never buffer unbounded).
+    parts: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await audio.read(_STT_READ_CHUNK)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_STT_BYTES:
+            return _stt_too_large_response(total)
+        parts.append(chunk)
+    data = b"".join(parts)
     if not data:
         return JSONResponse({"text": "", "error": "empty audio"}, status_code=400)
 
