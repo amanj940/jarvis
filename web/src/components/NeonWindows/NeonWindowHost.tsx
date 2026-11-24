@@ -25,6 +25,7 @@ import Model3DViewer from "../Media/Model3DViewer";
 import WebcamFeed from "../Media/WebcamFeed";
 import ArticleReader from "../Media/ArticleReader";
 import TerminalPanel from "../HUD/TerminalPanel";
+import StreetMapWindow from "./StreetMapWindow";
 import NeonWindow from "./NeonWindow";
 import {
   flushNeonWindowPersistence,
@@ -36,9 +37,10 @@ import {
   openWebcam,
   restoreNeonWindows,
   useNeonWindowStore,
+  type NeonWindowPayload,
 } from "./windowStore";
 
-function WindowContent({ winId, kind, cardId }: { winId: string; kind: string; cardId?: string }) {
+function WindowContent({ winId, kind, cardId, payload }: { winId: string; kind: string; cardId?: string; payload?: NeonWindowPayload }) {
   const media = useStore((s) => s.media);
   const reader = useStore((s) => s.reader);
 
@@ -102,6 +104,19 @@ function WindowContent({ winId, kind, cardId }: { winId: string; kind: string; c
     // closing the window itself is the NeonWindow chrome's job.
     void winId;
     return <ArticleReader />;
+  }
+
+  if (kind === "street-map") {
+    const lat = payload?.lat;
+    const lon = payload?.lon;
+    if (lat === undefined || lon === undefined) {
+      return (
+        <div className="flex h-full items-center justify-center p-6 text-center font-mono text-[11px] tracking-[0.2em] text-slate-400">
+          No city selected.
+        </div>
+      );
+    }
+    return <StreetMapWindow lat={lat} lon={lon} name={payload?.name ?? "City"} />;
   }
 
   if (kind === "webcam") {
@@ -194,7 +209,7 @@ export default function NeonWindowHost() {
     <div className="pointer-events-none fixed inset-0 z-[60]" aria-hidden={false}>
       {windows.map((win) => (
         <NeonWindow key={win.id} win={win}>
-          <WindowContent winId={win.id} kind={win.kind} cardId={win.payload?.cardId} />
+          <WindowContent winId={win.id} kind={win.kind} cardId={win.payload?.cardId} payload={win.payload} />
         </NeonWindow>
       ))}
 
