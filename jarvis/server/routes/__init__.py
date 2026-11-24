@@ -10,6 +10,7 @@ Was a single 1,434-line ``routes.py``; now::
     routes/memory.py  — /memory/* reads
     routes/intel.py   — /intel/globe + /intel/summary (globe intel layer)
     routes/geo.py     — /geo/* (atlas: countries, cities, weather, geocode)
+    routes/shopify_webhooks.py — /webhooks/shopify (Shopify HMAC webhooks)
     routes/youtube_oauth.py — /youtube/oauth/* (OAuth flow: status, start, callback; draft-only)
 
 ``router`` below aggregates all four sub-routers, so
@@ -30,6 +31,7 @@ from .intel import router as intel_router
 from .system import install_log_handler, router as system_router
 from .voice import router as voice_router
 from .youtube_oauth import router as youtube_oauth_router
+from .shopify_webhooks import router as shopify_webhooks_router
 
 router = APIRouter()
 router.include_router(system_router)
@@ -39,6 +41,7 @@ router.include_router(memory_router)
 router.include_router(intel_router)
 router.include_router(geo_router)
 router.include_router(youtube_oauth_router)
+router.include_router(shopify_webhooks_router)
 
 __all__ = [
     "router",
