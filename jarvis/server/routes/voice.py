@@ -25,6 +25,8 @@ from ...models.tts import (
     _should_try_riva,
     _synthesize_with_piper,
     _synthesize_with_riva,
+    is_arabic_text,
+    resolve_edge_voice,
 )
 from ...core.voice_state import VoiceState
 from ...models.whisper import (
@@ -130,7 +132,10 @@ async def speech_to_text(request: Request, audio: UploadFile = File(...), langua
 
 class TTSBody(BaseModel):
     text: str
-    voice: str = JARVIS_TTS_VOICE
+    # None = no explicit request: the configured default wins
+    # (cfg.voice.edge_voice, ar-SA-HamedNeural). A request-body default
+    # here used to silently override config.yaml on every call.
+    voice: str | None = None
 
 @router.get("/tts/status")
 async def tts_status(request: Request):
@@ -146,9 +151,14 @@ async def tts_status(request: Request):
         provider, label, voice, lang = "nvidia-riva", "NVIDIA Riva / Jarvis TTS", cfg.voice.riva_voice, cfg.voice.riva_language_code
     else:
         provider = "edge-tts"
-        label = "Microsoft Ryan Neural (British male)"
-        voice = cfg.voice.edge_voice
-        lang = "en-GB"
+        voice = cfg.voice.edge_voice or JARVIS_TTS_VOICE
+        # Label + lang follow the configured voice, so the HUD top bar
+        # shows the voice that will actually speak (Hamed for Arabic).
+        lang = "-".join(voice.split("-")[:2]) if "-" in voice else "ar-SA"
+        label = (
+            "Hamed Neural (Arabic)" if voice.startswith("ar-SA-Hamed")
+            else f"{voice} (Edge-TTS)"
+        )
 
     vs = getattr(getattr(request.app.state, "orchestrator", None), "voice_state", None)
     return {
@@ -165,14 +175,14 @@ async def tts_status(request: Request):
                 "enabled":  bool(getattr(cfg.voice, "piper_enabled", False)),
                 "available": piper_ready,
                 "model":    str(cfg.abs_path(cfg.voice.piper_model)),
-                "note":     "Install: pip install piper-tts. Model: huggingface.co/jgkawell/jarvis (en_GB-jarvis-medium.onnx).",
+                "note":     "English-only model (en_GB-jarvis). Arabic text skips Piper and uses Edge (ar-SA-HamedNeural). Install: pip install piper-tts. Model: huggingface.co/jgkawell/jarvis (en_GB-jarvis-medium.onnx).",
             },
             "edge_tts": {
                 "available": edge_available,
                 "voice": cfg.voice.edge_voice,
                 "rate":  cfg.voice.edge_rate,
                 "pitch": cfg.voice.edge_pitch,
-                "label": "Microsoft Ryan Neural",
+                "label": "Hamed Neural (Arabic)" if (cfg.voice.edge_voice or "").startswith("ar-SA-Hamed") else cfg.voice.edge_voice,
             },
             "nvidia_riva": {
                 "enabled": _riva_enabled(cfg),
@@ -250,23 +260,28 @@ async def tts(request: Request, body: TTSBody):
     tts_log = logging.getLogger("jarvis.tts")
 
     # 1. Piper — community JARVIS model (closest to MCU voice).
-    if _should_try_piper(cfg):
+    # English-only: skipped for Arabic text in auto mode (see
+    # jarvis/models/tts.py is_arabic_text) so Arabic is never spoken
+    # in an English voice. An explicit provider=piper still tries it.
+    if _should_try_piper(cfg, text):
         try:
             audio = _synthesize_with_piper(text, cfg)
             return Response(audio, media_type="audio/wav", headers={"X-JARVIS-TTS": "piper"})
         except Exception as e:  # noqa: BLE001
             tts_log.warning("Piper TTS failed (%s) — falling back", e)
 
-    # 2. Riva (NVIDIA cloud)
-    if _should_try_riva(cfg):
+    # 2. Riva (NVIDIA cloud) — likewise skipped for Arabic text in
+    # auto mode: it is configured with an English voice (en-US).
+    if _should_try_riva(cfg, text):
         try:
             audio = _synthesize_with_riva(text, cfg)
             return Response(audio, media_type="audio/wav", headers={"X-JARVIS-TTS": "riva"})
         except Exception as e:  # noqa: BLE001
             tts_log.warning("Riva TTS failed (%s) — falling back to edge-tts", e)
 
-    # 3. Edge TTS (Microsoft Ryan / Thomas Neural)
-    voice = body.voice or cfg.voice.edge_voice or "en-GB-ThomasNeural"
+    # 3. Edge TTS — default voice is ar-SA-HamedNeural (config wins;
+    # an explicit per-request voice= still overrides it).
+    voice = resolve_edge_voice(body.voice, cfg)
     rate  = cfg.voice.edge_rate  or "-6%"
     pitch = cfg.voice.edge_pitch or "+0Hz"
     try:
