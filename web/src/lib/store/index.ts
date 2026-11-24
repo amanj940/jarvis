@@ -13,6 +13,7 @@
  */
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
+import { isEmptyAssistantText } from "../speechText";
 
 import type {
   ChatAttachment,
@@ -288,11 +289,24 @@ export const useStore = create<StoreState>()(persist((set) => ({
       chat: st.chat.map((c) => (c.id === id ? { ...c, text: c.text + piece } : c)),
     })),
   finalizeChat: (id, text) =>
-    set((st) => ({
-      chat: st.chat.map((c) =>
-        c.id === id ? { ...c, streaming: false, text: text ?? c.text } : c,
-      ),
-    })),
+    set((st) => {
+      // If the final text is empty (tool-only hop produced no visible tokens),
+      // remove the placeholder entirely instead of leaving a blank bubble.
+      // (audit/fixes finalizeChat, ported verbatim — see REPORT-store.md §3.)
+      const finalText = text ?? st.chat.find((c) => c.id === id)?.text ?? "";
+      const entry = st.chat.find((c) => c.id === id);
+      const empty =
+        finalText.trim() === "" ||
+        (entry?.role === "assistant" && isEmptyAssistantText(finalText));
+      if (empty) {
+        return { chat: st.chat.filter((c) => c.id !== id) };
+      }
+      return {
+        chat: st.chat.map((c) =>
+          c.id === id ? { ...c, streaming: false, text: finalText } : c,
+        ),
+      };
+    }),
   updateChat: (id, text) =>
     set((st) => ({
       chat: st.chat.map((c) => (c.id === id ? { ...c, text } : c)),
