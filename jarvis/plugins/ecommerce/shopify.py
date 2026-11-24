@@ -19,6 +19,8 @@ from typing import Any
 
 import httpx
 
+from ..common.urls import normalize_shop_domain
+
 log = logging.getLogger("jarvis.ecommerce.shopify")
 
 API_VERSION = "2024-10"
@@ -29,7 +31,9 @@ class ShopifyNotConfigured(RuntimeError):
 
 
 def shop_url_from_env() -> str:
-    return os.environ.get("SHOPIFY_SHOP_URL", "").strip().lower()
+    """Shop domain from the environment, normalised via the shared
+    helper (strip + lowercase + drop a pasted scheme/path)."""
+    return normalize_shop_domain(os.environ.get("SHOPIFY_SHOP_URL", ""))
 
 
 def access_token_from_env() -> str:
