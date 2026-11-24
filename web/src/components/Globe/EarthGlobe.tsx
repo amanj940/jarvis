@@ -614,9 +614,9 @@ export default function EarthGlobe(props: EarthGlobeProps) {
 
   return (
     <group ref={groupRef}>
-      {/* Ambient & directional sun lighting for realistic day/night surface & clouds */}
-      <ambientLight intensity={0.8} />
-      <directionalLight position={[5, 3, 5]} intensity={2.0} />
+      {/* Ambient & directional sun lighting calibrated for rich, cinematic contrast */}
+      <ambientLight intensity={0.35} />
+      <directionalLight position={[5, 3, 5]} intensity={1.2} />
 
       {/* Earth sphere */}
       <mesh>
@@ -626,10 +626,10 @@ export default function EarthGlobe(props: EarthGlobeProps) {
           bumpMap={topoTex ?? undefined}
           bumpScale={topoTex ? 0.03 : 0}
           emissiveMap={dayNight ? nightTex ?? undefined : undefined}
-          emissive={dayNight && nightTex ? "#ffffff" : "#000000"}
-          emissiveIntensity={dayNight && nightTex ? 0.85 : 0}
-          shininess={12}
-          specular={new THREE.Color("#1a3a4a")}
+          emissive={dayNight && nightTex ? "#ffbe53" : "#000000"}
+          emissiveIntensity={dayNight && nightTex ? 0.35 : 0}
+          shininess={16}
+          specular={new THREE.Color("#112233")}
         />
       </mesh>
 
@@ -643,14 +643,14 @@ export default function EarthGlobe(props: EarthGlobeProps) {
         />
       </lineSegments>
 
-      {/* Cloud shell */}
+      {/* Cloud shell — subtle transparent wisps */}
       {clouds && (
         <mesh ref={cloudsRef} scale={1.015}>
           <sphereGeometry args={[radius, 48, 48]} />
           <meshLambertMaterial
             map={proceduralClouds}
             transparent
-            opacity={0.55}
+            opacity={0.20}
             depthWrite={false}
           />
         </mesh>
