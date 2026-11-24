@@ -1,8 +1,13 @@
 /**
  * NEON WINDOW STORE — Iron Man film-style floating window manager.
  *
- * A tiny zustand store (in-memory only, never persisted) holding every open
- * neon window: its kind, geometry, z-order and minimised state.
+ * A tiny zustand store holding every open neon window: its kind, geometry,
+ * z-order and minimised state.
+ *
+ * Layout is PERSISTED to localStorage (debounced on every change) and
+ * restored once on launch by NeonWindowHost — windows the user left open
+ * come back; auto-opened content is still governed by the host's `seen`
+ * set. Corrupt or old stored data is ignored, never thrown.
  *
  * Kinds are singletons except galaxy / model3d, which are one window per
  * media card id. Opening an already-open singleton focuses + restores it
@@ -83,6 +88,178 @@ const SINGLETON_KINDS: ReadonlySet<NeonWindowKind> = new Set([
   "browser",
   "webcam",
 ]);
+
+// ── Layout persistence (localStorage) ─────────────────────────────────────
+// Saved on every change (debounced), restored once on launch by
+// NeonWindowHost. Only windows the user left open are restored.
+// Anything unreadable — bad JSON, wrong version, bad shape, off-viewport
+// geometry — is dropped, never thrown, so a corrupt entry can never break
+// the HUD.
+const PERSIST_KEY = "jarvis.neon-windows.v1";
+const PERSIST_VERSION = 1;
+/** Max windows restored on launch; oldest minimised dropped first. */
+const MAX_RESTORED_WINDOWS = 8;
+
+const ALL_KINDS: ReadonlySet<string> = new Set([
+  "media-bay",
+  "galaxy",
+  "model3d",
+  "terminal",
+  "browser",
+  "webcam",
+]);
+
+function isFiniteNumber(v: unknown): v is number {
+  return typeof v === "number" && Number.isFinite(v);
+}
+
+function parsePersistedWindow(raw: unknown, vw: number, vh: number): NeonWindowState | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.kind !== "string" || !ALL_KINDS.has(r.kind)) return null;
+  if (typeof r.id !== "string" || r.id.length === 0) return null;
+  if (typeof r.title !== "string" || r.title.length === 0) return null;
+  if (
+    !isFiniteNumber(r.x) || !isFiniteNumber(r.y) || !isFiniteNumber(r.w) ||
+    !isFiniteNumber(r.h) || !isFiniteNumber(r.z)
+  ) return null;
+
+  // Clamp into the current viewport so a window saved on a bigger screen
+  // never lands unreachable (same bounds as drag/resize in NeonWindow).
+  const w = Math.max(320, Math.min(r.w, vw - 16));
+  const h = Math.max(220, Math.min(r.h, vh - 16));
+  const x = Math.max(-w + 120, Math.min(vw - 120, r.x));
+  const y = Math.max(0, Math.min(vh - 48, r.y));
+
+  let prevRect: NeonWindowState["prevRect"];
+  if (r.prevRect && typeof r.prevRect === "object") {
+    const p = r.prevRect as Record<string, unknown>;
+    if (isFiniteNumber(p.x) && isFiniteNumber(p.y) && isFiniteNumber(p.w) && isFiniteNumber(p.h)) {
+      prevRect = { x: p.x, y: p.y, w: p.w, h: p.h };
+    }
+  }
+
+  let payload: NeonWindowPayload | undefined;
+  if (r.payload && typeof r.payload === "object") {
+    const cardId = (r.payload as Record<string, unknown>).cardId;
+    if (typeof cardId === "string" && cardId.length > 0) payload = { cardId };
+  }
+
+  return {
+    id: r.id,
+    kind: r.kind as NeonWindowKind,
+    title: r.title,
+    titleAr: typeof r.titleAr === "string" ? r.titleAr : undefined,
+    x,
+    y,
+    w,
+    h,
+    z: r.z,
+    minimized: r.minimized === true,
+    maximized: r.maximized === true,
+    prevRect,
+    payload,
+  };
+}
+
+function loadPersistedWindows(): NeonWindowState[] {
+  try {
+    if (typeof window === "undefined" || !window.localStorage) return [];
+    const raw = window.localStorage.getItem(PERSIST_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return [];
+    const p = parsed as Record<string, unknown>;
+    if (p.version !== PERSIST_VERSION || !Array.isArray(p.windows)) return [];
+
+    const vw = window.innerWidth || 1600;
+    const vh = window.innerHeight || 900;
+    const out: NeonWindowState[] = [];
+    const seenKeys = new Set<string>();
+    for (const item of p.windows) {
+      const win = parsePersistedWindow(item, vw, vh);
+      if (!win) continue;
+      // De-duplicate: one window per singleton kind, one per card id.
+      const key = win.payload?.cardId ? `${win.kind}:${win.payload.cardId}` : win.kind;
+      if (seenKeys.has(key)) continue;
+      seenKeys.add(key);
+      out.push(win);
+    }
+    // Cap: drop oldest minimised first, then oldest by z-order.
+    out.sort((a, b) => a.z - b.z);
+    while (out.length > MAX_RESTORED_WINDOWS) {
+      const minIdx = out.findIndex((w) => w.minimized);
+      out.splice(minIdx >= 0 ? minIdx : 0, 1);
+    }
+    // Re-number z so stacking stays sane (61..).
+    out.forEach((w, i) => {
+      w.z = 61 + i;
+    });
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+function savePersistedWindows(windows: NeonWindowState[]): void {
+  try {
+    if (typeof window === "undefined" || !window.localStorage) return;
+    const payload = {
+      version: PERSIST_VERSION,
+      windows: windows.map((w) => ({
+        id: w.id,
+        kind: w.kind,
+        title: w.title,
+        titleAr: w.titleAr,
+        x: w.x,
+        y: w.y,
+        w: w.w,
+        h: w.h,
+        z: w.z,
+        minimized: w.minimized,
+        maximized: w.maximized,
+        prevRect: w.prevRect,
+        payload: w.payload,
+      })),
+    };
+    window.localStorage.setItem(PERSIST_KEY, JSON.stringify(payload));
+  } catch {
+    // Storage unavailable / full / blocked — layout just won't persist.
+  }
+}
+
+let saveTimer: ReturnType<typeof setTimeout> | undefined;
+function schedulePersist(windows: NeonWindowState[]): void {
+  if (typeof window === "undefined") return;
+  if (saveTimer !== undefined) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    saveTimer = undefined;
+    savePersistedWindows(windows);
+  }, 200);
+}
+
+/** Write the current layout to storage right now (e.g. on beforeunload). */
+export function flushNeonWindowPersistence(): void {
+  if (saveTimer !== undefined) {
+    clearTimeout(saveTimer);
+    saveTimer = undefined;
+  }
+  savePersistedWindows(useNeonWindowStore.getState().windows);
+}
+
+let restored = false;
+/**
+ * Restore windows the user left open. Safe to call repeatedly; only the
+ * first call does anything. Returns true when windows were restored.
+ */
+export function restoreNeonWindows(): boolean {
+  if (restored) return false;
+  restored = true;
+  const windows = loadPersistedWindows();
+  if (windows.length === 0) return false;
+  useNeonWindowStore.setState({ windows, zTop: 60 + windows.length });
+  return true;
+}
 
 let idCounter = 0;
 function nextWindowId(kind: NeonWindowKind): string {
@@ -211,6 +388,10 @@ export const useNeonWindowStore = create<NeonWindowStore>()((set, get) => ({
 
   closeAll: () => set({ windows: [] }),
 }));
+
+// Persist the layout on every change (debounced 200 ms so drags/resizes
+// don't hammer localStorage).
+useNeonWindowStore.subscribe((st) => schedulePersist(st.windows));
 
 /** Convenience openers used by the launcher dock and auto-open wiring. */
 export function openMediaBay(): string {
