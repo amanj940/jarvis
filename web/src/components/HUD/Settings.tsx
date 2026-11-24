@@ -339,7 +339,7 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
   const [modalLoadingModels, setModalLoadingModels] = useState(false);
   const [modalModelCounts, setModalModelCounts] = useState<Record<string, number>>({});
   const [voiceProvider, setVoiceProvider] = useState("auto");
-  const [edgeVoice, setEdgeVoice] = useState("en-GB-RyanNeural");
+  const [edgeVoice, setEdgeVoice] = useState("ar-SA-HamedNeural");
   const [edgeRate, setEdgeRate] = useState("-6%");
   const [ttsVolume, setTtsVolume] = useState(0.9);
 
@@ -445,7 +445,7 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
         if (j.api_keys) setApiKeyStatus(j.api_keys);
         if (j.voice) {
           setVoiceProvider(j.voice.provider ?? "auto");
-          setEdgeVoice(j.voice.edge_voice ?? "en-GB-RyanNeural");
+          setEdgeVoice(j.voice.edge_voice ?? "ar-SA-HamedNeural");
           setEdgeRate(j.voice.edge_rate ?? "-6%");
           setTtsVolume(j.voice.pyttsx3_volume ?? 0.9);
         }
@@ -2579,7 +2579,7 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                     <select value={voiceProvider} onChange={(e) => { setVoiceProvider(e.target.value); setDirty(true); }}
                       className="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-3 text-white">
                       <option value="auto">Auto (best available)</option>
-                      <option value="edge_tts">Edge-TTS (Online, Microsoft Ryan)</option>
+                      <option value="edge_tts">Edge-TTS (Online, Microsoft)</option>
                       <option value="piper">Piper (Local, JARVIS model)</option>
                       <option value="pyttsx3">System TTS (pyttsx3 / espeak)</option>
                       <option value="nvidia_riva">NVIDIA Riva (Cloud)</option>
@@ -2588,10 +2588,10 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                       <label className="text-sm text-slate-300">Edge-TTS Voice</label>
                       <select value={edgeVoice} onChange={(e) => { setEdgeVoice(e.target.value); setDirty(true); }}
                         className="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-3 text-white">
-                        <option value="en-GB-RyanNeural">Ryan Neural (British, recommended)</option>
+                        <option value="en-GB-RyanNeural">Ryan Neural (British)</option>
                         <option value="en-GB-ThomasNeural">Thomas Neural (British)</option>
                         <option value="en-GB-SoniaNeural">Sonia Neural (British, female)</option>
-                        <option value="ar-SA-HamedNeural">Hamed Neural (Arabic)</option>
+                        <option value="ar-SA-HamedNeural">Hamed Neural (Arabic, recommended)</option>
                         <option value="ar-SA-SalehNeural">Saleh Neural (Arabic)</option>
                       </select>
                     </div>
