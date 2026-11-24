@@ -5,6 +5,9 @@
  * at z 60+ so they float over the HUD but under nothing else modal).
  *
  * Wiring (no edits to the wrapped panels themselves):
+ *   • Layout persistence: windows left open are saved to localStorage and
+ *     restored on launch (windowStore.restoreNeonWindows); the `seen` set
+ *     below still stops old cards auto-popping on reload.
  *   • Media Bay / image & video & page results → media-bay window.
  *   • Memory galaxy card arrival → its own galaxy window.
  *   • Generated 3D model card arrival → its own model3d window.
@@ -24,12 +27,14 @@ import ArticleReader from "../Media/ArticleReader";
 import TerminalPanel from "../HUD/TerminalPanel";
 import NeonWindow from "./NeonWindow";
 import {
+  flushNeonWindowPersistence,
   openBrowser,
   openGalaxyWindow,
   openMediaBay,
   openModel3DWindow,
   openTerminal,
   openWebcam,
+  restoreNeonWindows,
   useNeonWindowStore,
 } from "./windowStore";
 
@@ -135,6 +140,18 @@ export default function NeonWindowHost() {
   const focusWindow = useNeonWindowStore((s) => s.focusWindow);
   const closeWindow = useNeonWindowStore((s) => s.closeWindow);
   const minimized = windows.filter((w) => w.minimized);
+
+  // ── Restore windows the user left open ─────────────────────────────────
+  // Declared FIRST so it runs before the auto-open effects below: restored
+  // windows are already present (and their cards already seeded into
+  // `seen`) when fresh arrivals are checked, so a reload never duplicates
+  // them and never pops windows for old cards.
+  useEffect(() => {
+    restoreNeonWindows();
+    const flush = () => flushNeonWindowPersistence();
+    window.addEventListener("beforeunload", flush);
+    return () => window.removeEventListener("beforeunload", flush);
+  }, []);
 
   // ── Auto-open results as windows ──────────────────────────────────────
   // `seen` is seeded from whatever media already exists at mount, so a
