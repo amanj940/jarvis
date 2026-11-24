@@ -237,8 +237,8 @@ async function refreshServerVoiceProfile(): Promise<void> {
     const status = await resp.json();
     if (status?.available) {
       useStore.getState().setVoiceProfile({
-        name: status.label || "Microsoft Ryan Neural",
-        lang: status.lang || "en-GB",
+        name: status.label || "Hamed Neural (Arabic)",
+        lang: status.lang || "ar-SA",
         tier: "cinematic",
       });
     }
