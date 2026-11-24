@@ -20,12 +20,13 @@ Safety rules:
 from __future__ import annotations
 
 import importlib
+import re
 from typing import Any
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator, model_validator
 
 from .common import _services
 
@@ -51,9 +52,54 @@ class KeyProbeBody(BaseModel):
     live: bool = False
 
 
+class KeyRemoveBody(BaseModel):
+    provider: str
+    # Identify the key by full value, masked value, or key id — at least
+    # one is required. A full value is never echoed back in the response.
+    key: str | None = None
+    masked: str | None = None
+    key_id: str | None = None
+
+
+def _split_keys_blob(blob: str) -> list[str]:
+    """Split a pasted block of keys (newlines / commas / semicolons)."""
+    out: list[str] = []
+    for chunk in re.split(r"[\n,;]+", blob):
+        item = chunk.strip().strip('"').strip("'")
+        if item:
+            out.append(item)
+    return out
+
+
 class KeyBulkBody(BaseModel):
     provider: str
-    keys: list[str]
+    # The Settings UI bulk-paste box sends the keys as ONE
+    # newline-separated string (``{"provider": ..., "keys": "sk-...\\nsk-..."}``)
+    # or under ``text`` — both used to 422 against ``list[str]``. Accept
+    # the list shape (unchanged), a single string blob, a ``text`` blob,
+    # and list items shaped ``{"key": "..."}``; all normalize to a list.
+    keys: list[str] | str | None = None
+    text: str | None = None
+
+    @field_validator("keys", mode="before")
+    @classmethod
+    def _coerce_keys(cls, v: Any) -> Any:
+        if isinstance(v, list):
+            out: list[str] = []
+            for item in v:
+                if isinstance(item, dict):
+                    item = item.get("key") or item.get("value") or ""
+                out.append(str(item))
+            return out
+        return v
+
+    @model_validator(mode="after")
+    def _fill_from_text(self) -> "KeyBulkBody":
+        if isinstance(self.keys, str):
+            self.keys = _split_keys_blob(self.keys)
+        if not self.keys and self.text:
+            self.keys = _split_keys_blob(self.text)
+        return self
 
 
 def _unavailable(reason: str) -> JSONResponse:
@@ -242,6 +288,48 @@ async def keys_add(request: Request, body: KeyAddBody):
             if km.get_masked_keys(provider) else None}
 
 
+@router.post("/keys/remove")
+async def keys_remove(request: Request, body: KeyRemoveBody):
+    """Remove one key by full value, masked value, or key id (POST form).
+
+    The UI's key-remove button POSTs a JSON body; the DELETE
+    ``/api/keys/{key_id}`` route stays as the REST equivalent. The full
+    key value is never echoed back — only its masked form.
+    """
+    cfg, *_ = _services(request)
+    _require_confirm(cfg)
+    km = _get_key_manager(request)
+    if km is None:
+        return _unavailable("key_manager module not present on this backend build")
+    provider = body.provider.lower().strip()
+    identifier = (
+        (body.key or "").strip()
+        or (body.masked or "").strip()
+        or (body.key_id or "").strip()
+    )
+    if not provider or not identifier:
+        raise HTTPException(
+            status_code=400,
+            detail="provider and one of key / masked / key_id are required")
+    if not km.remove_key(provider, identifier):
+        raise HTTPException(
+            status_code=404, detail=f"no such key in pool for {provider}")
+    # Echo only the masked form — never a full key value.
+    removed = identifier
+    if body.key:
+        try:
+            from jarvis.core.key_manager import mask_key as _mask
+            removed = _mask(body.key)
+        except Exception:
+            removed = "••••••••"
+    return {
+        "ok": True,
+        "provider": provider,
+        "removed": removed,
+        "remaining": len(km.get_masked_keys(provider)),
+    }
+
+
 @router.delete("/keys/{key_id}")
 async def keys_delete(request: Request, key_id: str, provider: str | None = None):
     cfg, *_ = _services(request)
@@ -273,7 +361,7 @@ async def keys_bulk_import(request: Request, body: KeyBulkBody):
     added = 0
     duplicates = 0
     for raw in body.keys:
-        key = str(raw).strip()
+        key = str(raw).strip().strip('"').strip("'")
         if not key:
             continue
         if km.add_key(provider, key):
