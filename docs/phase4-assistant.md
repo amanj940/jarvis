@@ -87,6 +87,36 @@ Nothing was pushed; the parent verifies and pushes.
   default). TTS voice selection is unchanged (Piper/Edge English voices);
   an Arabic TTS voice is a separate follow-up, not part of this phase.
 
+### 3b. Arabic TTS voice — Hamed Neural (2026-11-24, after Phase 4)
+
+The user chose Microsoft Edge-TTS **ar-SA-HamedNeural** (Hamed, Saudi
+Arabic) as the default voice, so the follow-up above is now done:
+
+- **Defaults (both files, they must agree):** `voice.edge_voice:
+  ar-SA-HamedNeural` and `A.persona_file: persona/jarvis-ar.md` in
+  `config.yaml`, mirrored in `jarvis/config.py`. STT stays `"ar"`.
+- **Why config alone used to be ignored:** `POST /api/tts` had a
+  request-body default of `en-GB-ThomasNeural`, which always won over
+  `config.yaml`, and the frontend labelled Arabic playback "Hamed" while
+  the server spoke Thomas. Fixed: the body voice is now optional
+  (`voice: null` = use config), resolved by
+  `jarvis/models/tts.py: resolve_edge_voice()`, and `/api/tts/status`
+  reports the configured voice/label so the HUD agrees with the server.
+- **Language routing:** the local Piper model is English-only, so in
+  `auto` mode Arabic text skips Piper (and the English-configured Riva)
+  and goes to Edge Hamed; English text can still use Piper
+  (`jarvis/models/tts.py: is_arabic_text`). An explicit
+  `provider: piper` / `provider: nvidia_riva` still overrides routing.
+- **Edge-TTS needs internet.** If the network is down, `/api/tts`
+  returns 503 for Arabic text (Piper cannot speak it) — the browser
+  SpeechSynthesis fallback in `web/src/lib/voice/tts.ts` then speaks
+  instead. For fully offline Arabic speech, install an Arabic Piper or
+  Kokoro model later; that is still an open follow-up.
+- **Switch back to English:** in `config.yaml` set
+  `voice.edge_voice: en-GB-ThomasNeural`, `A.persona_file:
+  persona/jarvis.md`, `voice.stt_language: "en"` — then restart the
+  backend. Tests: `tests/test_voice_arabic.py` (no network).
+
 ## 4. Real error recovery
 
 - LLM retries (`jarvis/core/brain.py`): transient failures (connection
