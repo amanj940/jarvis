@@ -60,7 +60,7 @@ import type { GlobeArc, GlobeLayer, GlobeMarker } from "./GlobeMarker";
 export interface EarthGlobeProps {
   /** Globe radius in scene units. Default 1.9 (fits the HUD camera). */
   radius?: number;
-  /** Base spin speed in rad/s. Default 0.05. */
+  /** Base spin speed in rad/s. Default 0.006 (realistic slow planetary spin). */
   rotationSpeed?: number;
   /** Slowly spin when idle. Default true. */
   autoRotate?: boolean;
@@ -330,7 +330,7 @@ function buildArcGeometry(
 export default function EarthGlobe(props: EarthGlobeProps) {
   const {
     radius = 1.9,
-    rotationSpeed = 0.05,
+    rotationSpeed = 0.006,
     autoRotate = true,
     atmosphere = true,
     dayNight = true,
@@ -536,16 +536,16 @@ export default function EarthGlobe(props: EarthGlobeProps) {
       }
     }
 
-    // Rotation speed by voice state.
+    // Realistic calm rotation speed (gentle modulation by voice state).
     const targetSpeed = motionReduced
       ? 0
       : rotationSpeed *
         (orbState === "listening"
-          ? 2.4
+          ? 1.3
           : orbState === "thinking"
-            ? 0.5
+            ? 0.8
             : orbState === "speaking"
-              ? 1.6
+              ? 1.2
               : 1);
     speedRef.current = THREE.MathUtils.lerp(
       speedRef.current,

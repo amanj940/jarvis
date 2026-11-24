@@ -337,8 +337,8 @@ export default function LivingEntityCore() {
           />
         </Canvas>
 
-        {/* 2D Precision Tactical HUD Rings (Co-located, matching canvas center exactly) */}
-        <HudRings reducedMotion={reducedMotion} />
+        {/* 2D Precision Tactical HUD Rings — only for fallback particle orb, omitted for clean real Earth */}
+        {globeFailed && <HudRings reducedMotion={reducedMotion} />}
       </div>
 
       {/* Floating Holographic HUD, Telemetry & Subtitle Ribbon */}
