@@ -8,6 +8,7 @@ Was a single 1,434-line ``routes.py``; now::
     routes/voice.py   — STT (/stt) + TTS (/tts, /tts/status)
     routes/media.py   — image models, /analyze-image, /image-to-3d, /img2img
     routes/memory.py  — /memory/* reads
+    routes/intel.py   — /intel/globe + /intel/summary (globe intel layer)
 
 ``router`` below aggregates all four sub-routers, so
 ``app.include_router(routes.router, prefix="/api")`` in server/app.py and
@@ -22,6 +23,7 @@ from ...models.tts import _should_try_piper, _synthesize_with_piper
 from ...models.whisper import _get_whisper_model
 from .media import router as media_router
 from .memory import router as memory_router
+from .intel import router as intel_router
 from .system import install_log_handler, router as system_router
 from .voice import router as voice_router
 
@@ -30,6 +32,7 @@ router.include_router(system_router)
 router.include_router(voice_router)
 router.include_router(media_router)
 router.include_router(memory_router)
+router.include_router(intel_router)
 
 __all__ = [
     "router",
