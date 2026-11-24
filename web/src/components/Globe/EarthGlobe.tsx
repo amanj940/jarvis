@@ -52,6 +52,7 @@ import { useFrame } from "@react-three/fiber";
 import { Html } from "@react-three/drei";
 import * as THREE from "three";
 import { useStore, type OrbState } from "../../lib/store";
+import { API_BASE } from "../../lib/api";
 import { useReducedMotion } from "../../lib/useReducedMotion";
 import {
   getGlobeLayers,
@@ -101,6 +102,83 @@ export interface EarthGlobeProps {
 }
 
 export const EARTH_TEXTURE_DIR = "/textures/earth";
+
+/** One city from GET /api/geo/cities — a WorldCity plus atlas extras. */
+export interface GeoCity extends WorldCity {
+  country_code?: string;
+  country_name?: string;
+  population?: number | null;
+  is_capital?: boolean;
+}
+
+/** Detail payload from GET /api/geo/city/<name>?weather=1. */
+export interface GeoCityDetail {
+  city?: {
+    name: string;
+    country_code?: string;
+    country_name?: string;
+    lat: number;
+    lon: number;
+    population?: number | null;
+    is_capital?: boolean;
+    timezone?: string;
+    country?: {
+      name?: string;
+      capital?: string;
+      population?: number | null;
+      area?: number | null;
+      languages?: string[];
+      currencies?: Array<{ code?: string; name?: string; symbol?: string }>;
+    };
+  };
+  weather?: {
+    ok?: boolean;
+    temperature_c?: number | null;
+    weather?: string;
+    wind_kmh?: number | null;
+    humidity_pct?: number | null;
+  };
+}
+
+// Geo/Atlas: the ~1,200 biggest cities (pop ≥ 100k) for the globe.
+// The full 7,342-city atlas stays searchable through the API/tools;
+// rendering all of it would clutter the globe on a weak laptop.
+const GEO_CITIES_URL = `${API_BASE}/api/geo/cities?min_population=100000&limit=1200`;
+
+/** Fetch atlas cities; null when the backend is down or unseeded. */
+export async function fetchGeoCities(): Promise<GeoCity[] | null> {
+  try {
+    const res = await fetch(GEO_CITIES_URL);
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      ok?: boolean;
+      cities?: Array<{
+        name: string;
+        country_code: string;
+        country_name?: string;
+        lat: number;
+        lon: number;
+        population?: number | null;
+        is_capital?: boolean;
+      }>;
+    };
+    if (!data?.ok || !Array.isArray(data.cities)) return null;
+    return data.cities.map((c) => ({
+      id: `${c.name}-${c.country_code}`
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-"),
+      name: c.name,
+      lat: c.lat,
+      lon: c.lon,
+      country_code: c.country_code,
+      country_name: c.country_name,
+      population: c.population,
+      is_capital: c.is_capital,
+    }));
+  } catch {
+    return null;
+  }
+}
 export const DEFAULT_DAY_TEXTURE = `${EARTH_TEXTURE_DIR}/earth-day.jpg`;
 export const DEFAULT_NIGHT_TEXTURE = `${EARTH_TEXTURE_DIR}/earth-night.jpg`;
 export const DEFAULT_TOPOLOGY_TEXTURE = `${EARTH_TEXTURE_DIR}/earth-topology.png`;
@@ -491,6 +569,18 @@ export default function EarthGlobe(props: EarthGlobeProps) {
   // startIntelLayer() fetches /api/intel/globe and registers the layers;
   // a failed fetch leaves the previous markers in place and never throws.
   useEffect(() => startIntelLayer(), []);
+  // Geo/Atlas cities: replace the built-in 69 with the atlas top cities
+  // when the backend answers; a failed fetch keeps WORLD_CITIES.
+  const [geoCities, setGeoCities] = useState<GeoCity[]>(WORLD_CITIES);
+  useEffect(() => {
+    let alive = true;
+    void fetchGeoCities().then((cities) => {
+      if (alive && cities && cities.length > 0) setGeoCities(cities);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
   const layers = useMemo(
     () => [...registryLayers, ...propLayers].filter((l) => l.visible !== false),
     [registryLayers, propLayers]
@@ -519,11 +609,11 @@ export default function EarthGlobe(props: EarthGlobeProps) {
   // City surface positions (local space; the group rotation moves them).
   const cityPositions = useMemo(
     () =>
-      WORLD_CITIES.map((city) => ({
+      geoCities.map((city) => ({
         city,
         pos: latLonToVec3(city.lat, city.lon, radius * 1.015),
       })),
-    [radius]
+    [radius, geoCities]
   );
   // One shared dot geometry/material for all cities (cheap on a weak GPU).
   const cityDotGeo = useMemo(
@@ -545,6 +635,32 @@ export default function EarthGlobe(props: EarthGlobeProps) {
   const [selectedMarker, setSelectedMarker] = useState<GlobeMarker | null>(
     null
   );
+  // Geo city clicked most recently — the info panel below fetches its
+  // details + weather from /api/geo/city (falls back to the dot's own
+  // name/coords while loading).
+  const [selectedCity, setSelectedCity] = useState<GeoCity | null>(null);
+  const [selectedCityInfo, setSelectedCityInfo] =
+    useState<GeoCityDetail | null>(null);
+  useEffect(() => {
+    if (!selectedCity) {
+      setSelectedCityInfo(null);
+      return;
+    }
+    let alive = true;
+    const code = selectedCity.country_code;
+    const url =
+      `${API_BASE}/api/geo/city/${encodeURIComponent(selectedCity.name)}?weather=1` +
+      (code ? `&country=${encodeURIComponent(code)}` : "");
+    void fetch(url)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (alive && data?.ok) setSelectedCityInfo(data as GeoCityDetail);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [selectedCity]);
   const [visibleCityIds, setVisibleCityIds] = useState<string[]>([]);
   const visibleCityIdsRef = useRef<string[]>([]);
   const tmpCityPos = useRef(new THREE.Vector3());
@@ -554,7 +670,7 @@ export default function EarthGlobe(props: EarthGlobeProps) {
     return visibleCityIds
       .map((id) => byId.get(id))
       .filter(
-        (c): c is { city: WorldCity; pos: THREE.Vector3 } => c !== undefined
+        (c): c is { city: GeoCity; pos: THREE.Vector3 } => c !== undefined
       );
   }, [visibleCityIds, cityPositions]);
 
@@ -806,6 +922,7 @@ export default function EarthGlobe(props: EarthGlobeProps) {
             onClick={(e) => {
               e.stopPropagation();
               setSelectedMarker(marker);
+              setSelectedCity(null);
               onMarkerClick?.(marker);
             }}
           >
@@ -894,6 +1011,110 @@ export default function EarthGlobe(props: EarthGlobeProps) {
         </group>
       )}
 
+      {/* Selected city — Geo/Atlas info panel (name / country / population / weather) */}
+      {selectedCity && (
+        <group
+          key={`geo-city-${selectedCity.id}`}
+          position={latLonToVec3(
+            selectedCity.lat,
+            selectedCity.lon,
+            radius * 1.03
+          )}
+        >
+          <Html
+            center
+            zIndexRange={[40, 0]}
+            style={{ pointerEvents: "auto" }}
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                fontFamily: "ui-monospace, monospace",
+                color: "#e0f2fe",
+                background: "rgba(2, 12, 24, 0.88)",
+                border: "1px solid rgba(125, 211, 252, 0.5)",
+                borderRadius: 8,
+                padding: "6px 8px",
+                maxWidth: 240,
+                whiteSpace: "normal",
+                boxShadow: "0 0 16px rgba(56, 189, 248, 0.35)",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "flex-start",
+                  gap: 8,
+                }}
+              >
+                <div style={{ fontSize: 12, fontWeight: 700 }}>
+                  {selectedCityInfo?.city?.name ?? selectedCity.name}
+                </div>
+                <button
+                  aria-label="Close"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSelectedCity(null);
+                  }}
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    color: "#7dd3fc",
+                    cursor: "pointer",
+                    fontSize: 14,
+                    lineHeight: 1,
+                    padding: 0,
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+              <div
+                style={{ fontSize: 10, color: "#bae6fd", marginTop: 2 }}
+              >
+                {selectedCityInfo
+                  ? [
+                      selectedCityInfo.city?.country_name ??
+                        selectedCityInfo.city?.country?.name,
+                      selectedCityInfo.city?.is_capital
+                        ? "national capital"
+                        : undefined,
+                      selectedCityInfo.city?.population != null
+                        ? `pop ${selectedCityInfo.city.population.toLocaleString()}`
+                        : undefined,
+                      selectedCityInfo.weather?.ok
+                        ? `${selectedCityInfo.weather.temperature_c ?? "?"}°C · ${selectedCityInfo.weather.weather ?? ""}`
+                        : undefined,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")
+                  : "loading…"}
+              </div>
+              {selectedCityInfo?.city?.country && (
+                <div
+                  style={{ fontSize: 10, color: "#7dd3fc", marginTop: 2 }}
+                >
+                  {[
+                    selectedCityInfo.city.country.capital
+                      ? `capital ${selectedCityInfo.city.country.capital}`
+                      : undefined,
+                    selectedCityInfo.city.country.population != null
+                      ? `country pop ${selectedCityInfo.city.country.population.toLocaleString()}`
+                      : undefined,
+                    (selectedCityInfo.city.country.languages ?? []).join(
+                      ", "
+                    ),
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </div>
+              )}
+            </div>
+          </Html>
+        </group>
+      )}
+
       {/* City dots — always on the surface (shared geometry/material) */}
       {cityPositions.map(({ city, pos }) => (
         <mesh
@@ -901,6 +1122,11 @@ export default function EarthGlobe(props: EarthGlobeProps) {
           position={[pos.x, pos.y, pos.z]}
           geometry={cityDotGeo}
           material={cityDotMat}
+          onClick={(e) => {
+            e.stopPropagation();
+            setSelectedCity(city);
+            setSelectedMarker(null);
+          }}
         />
       ))}
 
@@ -929,7 +1155,11 @@ export default function EarthGlobe(props: EarthGlobeProps) {
                 }}
               >
                 <span style={{ fontWeight: 600 }}>{city.name}</span>
-                <span style={{ color: "#7dd3fc", fontSize: 9 }}>({city.country})</span>
+                {city.country_name || city.country_code ? (
+                  <span style={{ color: "#7dd3fc", fontSize: 9 }}>
+                    ({city.country_name ?? city.country_code})
+                  </span>
+                ) : null}
               </div>
             </Html>
           </group>
