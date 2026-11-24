@@ -14,6 +14,7 @@ from ..base import PluginInfo, tool
 from ...core.permissions import Permission
 from .classification import classify_finding, in_scope
 from .programs import list_platforms, program_notes
+from .programs_sync import build_web_search_fetcher, sync_programs
 from .report import render_report
 from .store import VALID_PLATFORMS, VALID_STATUSES, BountyStore
 
@@ -243,6 +244,46 @@ def register(registry):
         if notes is None:
             return f"no notes for platform {platform!r}."
         return f"{notes['name']} ({notes['url']}): {notes['notes']} Disclosure: {notes['disclosure']}"
+
+    @tool(
+        name="bounty_sync_programs",
+        description=(
+            "Sync public bounty-program listings (HackerOne, Bugcrowd, "
+            "Intigriti, YesWeHack public directories) into the local bounty "
+            "DB via web_search. New programs are stored unreviewed with an "
+            "empty scope; duplicates are skipped by URL; a failing platform "
+            "is skipped. Local DB writes only — nothing is submitted."
+        ),
+        permission=Permission.CAUTION,
+        parameters={
+            "type": "object",
+            "properties": {
+                "platforms": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": list_platforms()},
+                    "default": [],
+                },
+            },
+        },
+        preview=lambda a: "bounty program sync",
+    )
+    async def bounty_sync_programs(platforms: list | None = None) -> str:
+        fetcher = build_web_search_fetcher(registry)
+        result = await sync_programs(store, search=fetcher,
+                                     platforms=platforms or None)
+        lines = [
+            f"bounty program sync: {result['added']} new, "
+            f"{result['duplicates']} duplicates skipped",
+        ]
+        if result["skipped"]:
+            lines.append(
+                f"skipped (search failed): {', '.join(result['skipped'])}")
+        if result["programs"]:
+            lines.append("new: " + ", ".join(result["programs"]))
+        lines.append(
+            "All synced programs are UNREVIEWED with empty scope — verify "
+            "the scope on the program page before testing anything.")
+        return "\n".join(lines)
 
     registry.add_pending("bounty")
     registry.register_plugin(PluginInfo(
