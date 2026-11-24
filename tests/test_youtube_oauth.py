@@ -324,5 +324,194 @@ class EnvCredentialsTests(unittest.TestCase):
         self.assertEqual(path, Path("/some/root/data/youtube_token.json"))
 
 
+
+class _FakeCfg:
+    """Minimal config stub rooted at a tmp dir (same shape as test_geo.py)."""
+
+    def __init__(self, root: Path):
+        self._root = root
+        self.plugins = {}
+
+    def abs_path(self, p):
+        return self._root / p
+
+
+def _make_oauth_client(root: Path, transport):
+    """In-process app with the aggregate router mounted under /api.
+
+    Importing the aggregate router also proves the youtube_oauth router
+    is registered in jarvis/server/routes/__init__.py.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from jarvis.server.routes import router
+
+    app = FastAPI()
+    app.state.cfg = _FakeCfg(root)
+    app.state.orchestrator = None
+    app.state.registry = None
+    app.state.memory = None
+    app.state.agents = None
+    app.state.youtube_oauth_transport = transport
+    app.include_router(router, prefix="/api")
+    return TestClient(app)
+
+
+class YoutubeOAuthRoutesTests(unittest.TestCase):
+    """Route-level tests: status/start/callback over TestClient.
+
+    All HTTP is faked with httpx.MockTransport; the token file lives in
+    a temporary directory. No network, no real Google account, no secret
+    ever leaves the test process.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.token_path = self.root / "data" / "youtube_token.json"
+        self._old_env = {}
+        for key in ("YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET",
+                    "YOUTUBE_REDIRECT_URI"):
+            self._old_env[key] = os.environ.pop(key, None)
+        os.environ["YOUTUBE_CLIENT_ID"] = "test-client-id"
+        os.environ["YOUTUBE_CLIENT_SECRET"] = "test-client-secret"
+        self.transport = _mock_transport(
+            lambda request: httpx.Response(200, json=_token_response()))
+        self.client = _make_oauth_client(self.root, self.transport)
+
+    def tearDown(self):
+        for key, value in self._old_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        self.tmp.cleanup()
+
+    def _start_state(self):
+        resp = self.client.get("/api/youtube/oauth/start",
+                               follow_redirects=False)
+        self.assertEqual(resp.status_code, 302, resp.text)
+        location = resp.headers["location"]
+        self.assertTrue(location.startswith(AUTH_URL + "?"), location)
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(location).query)
+        self.assertEqual(params["client_id"], ["test-client-id"])
+        self.assertEqual(
+            params["redirect_uri"],
+            ["http://localhost:7341/api/youtube/oauth/callback"])
+        self.assertEqual(params["response_type"], ["code"])
+        self.assertTrue(params["state"][0])
+        return params["state"][0]
+
+    def test_status_unconfigured_and_unauthorized(self):
+        os.environ.pop("YOUTUBE_CLIENT_ID")
+        os.environ.pop("YOUTUBE_CLIENT_SECRET")
+        resp = self.client.get("/api/youtube/oauth/status")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["ok"])
+        self.assertFalse(body["configured"])
+        self.assertFalse(body["authorized"])
+        self.assertFalse(body["has_refresh_token"])
+        self.assertIsNone(body["expires_at"])
+
+    def test_status_authorized_after_token_saved(self):
+        TokenStore(self.token_path).save({
+            "access_token": "ya29.route-status",
+            "refresh_token": "1//route-refresh",
+            "expires_at": int(time.time()) + 3600})
+        resp = self.client.get("/api/youtube/oauth/status")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["configured"])
+        self.assertTrue(body["authorized"])
+        self.assertTrue(body["has_refresh_token"])
+        self.assertGreater(body["expires_at"], int(time.time()))
+        # The status response must never leak token values.
+        self.assertNotIn("ya29.route-status", resp.text)
+        self.assertNotIn("1//route-refresh", resp.text)
+
+    def test_start_redirects_to_google_with_state(self):
+        state = self._start_state()
+        self.assertTrue(state)
+
+    def test_start_unconfigured_returns_503(self):
+        os.environ.pop("YOUTUBE_CLIENT_ID")
+        os.environ.pop("YOUTUBE_CLIENT_SECRET")
+        resp = self.client.get("/api/youtube/oauth/start",
+                               follow_redirects=False)
+        self.assertEqual(resp.status_code, 503)
+        self.assertFalse(resp.json()["ok"])
+
+    def test_callback_full_flow_stores_token(self):
+        state = self._start_state()
+        resp = self.client.get("/api/youtube/oauth/callback",
+                               params={"code": "4/0test-code", "state": state})
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(resp.json(), {"ok": True, "authorized": True})
+        # No token value is ever returned in the response.
+        self.assertNotIn("ya29.access", resp.text)
+        self.assertNotIn("1//refresh", resp.text)
+        # Token stored ONLY at data/youtube_token.json, mode 0600.
+        self.assertTrue(self.token_path.exists())
+        saved = TokenStore(self.token_path).load()
+        self.assertEqual(saved["access_token"], "ya29.access")
+        self.assertEqual(saved["refresh_token"], "1//refresh")
+        self.assertGreater(saved["expires_at"], int(time.time()))
+        if os.name == "posix":
+            self.assertEqual(oct(self.token_path.stat().st_mode & 0o777),
+                             "0o600")
+
+    def test_callback_state_mismatch_rejected(self):
+        self._start_state()
+        resp = self.client.get("/api/youtube/oauth/callback",
+                               params={"code": "4/0test-code",
+                                       "state": "bogus-state"})
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(resp.json()["ok"])
+        self.assertFalse(self.token_path.exists())
+
+    def test_callback_missing_state_rejected(self):
+        resp = self.client.get("/api/youtube/oauth/callback",
+                               params={"code": "4/0test-code"})
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(self.token_path.exists())
+
+    def test_callback_missing_code_rejected(self):
+        state = self._start_state()
+        resp = self.client.get("/api/youtube/oauth/callback",
+                               params={"state": state})
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(self.token_path.exists())
+
+    def test_callback_state_is_single_use(self):
+        state = self._start_state()
+        first = self.client.get("/api/youtube/oauth/callback",
+                                params={"code": "4/0test-code", "state": state})
+        self.assertEqual(first.status_code, 200)
+        second = self.client.get("/api/youtube/oauth/callback",
+                                 params={"code": "4/0test-code", "state": state})
+        self.assertEqual(second.status_code, 400)
+
+    def test_callback_exchange_failure_returns_502(self):
+        failing = _mock_transport(lambda request: httpx.Response(
+            400, json={"error": "invalid_grant",
+                       "error_description": "Bad Request"}))
+        client = _make_oauth_client(self.root, failing)
+        resp = client.get("/api/youtube/oauth/start", follow_redirects=False)
+        state = urllib.parse.parse_qs(
+            urllib.parse.urlparse(resp.headers["location"]).query)["state"][0]
+        resp = client.get("/api/youtube/oauth/callback",
+                          params={"code": "bad-code", "state": state})
+        self.assertEqual(resp.status_code, 502)
+        self.assertFalse(self.token_path.exists())
+
+    def test_callback_google_error_rejected(self):
+        resp = self.client.get("/api/youtube/oauth/callback",
+                               params={"error": "access_denied"})
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(self.token_path.exists())
+
+
 if __name__ == "__main__":
     unittest.main()
