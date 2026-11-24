@@ -17,7 +17,7 @@
  * Plays once per card.id (memoised in module-level Set). Filter switches
  * and sorts never replay. All overlays are `pointer-events: none`.
  */
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion, type MotionStyle } from "framer-motion";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { MediaKind } from "../../lib/store";
 
@@ -348,7 +348,11 @@ function Bracket({
 }) {
   const isLeft = side === "tl" || side === "bl";
   const isTop  = side === "tl" || side === "tr";
-  const pos: React.CSSProperties = {
+  // Typed as MotionStyle (not React.CSSProperties): spreading the full
+  // CSSProperties interface into a motion style prop fails tsc because
+  // csstype's SVG props (e.g. pathLength: "none") are not assignable to
+  // MotionStyle. MotionStyle carries exactly the props motion accepts.
+  const pos: MotionStyle = {
     top:    isTop  ? 6  : "auto",
     bottom: !isTop ? 6  : "auto",
     left:   isLeft ? 6  : "auto",
