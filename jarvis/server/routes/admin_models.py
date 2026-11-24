@@ -259,6 +259,124 @@ async def models_list(request: Request):
     }
 
 
+# Fields POST /api/models is allowed to set (all live under the ``model``
+# section of config.yaml). Anything else — in particular anything
+# secret-shaped — is rejected with 400, exactly like POST /api/config.
+_MODEL_SETTABLE_FIELDS = {
+    "provider",
+    "model",
+    "endpoint",
+    "temperature",
+    "max_tokens",
+    "request_timeout_seconds",
+    "native_tool_calls",
+    "reasoning_effort",
+    "frequency_penalty",
+    "presence_penalty",
+    "fallback_provider",
+    "fallback_model",
+    "fallback_endpoint",
+}
+
+
+@router.post("/models")
+async def models_set(request: Request, body: dict):
+    """Set the active model (CAUTION: rewrites config.yaml, needs restart).
+
+    Accepts the flat shape the Settings UI sends::
+
+        {"provider": "groq", "model": "llama-3", "endpoint": "...",
+         "temperature": 0.3}
+
+    and the nested shape ``{"model": {"provider": ..., "model": ...}}``
+    (nested keys lose to top-level keys when both are present).
+    ``endpoint`` may be omitted: it is then filled from the provider
+    catalog default when the provider is known, otherwise the configured
+    endpoint is kept. Requires confirm mode, like POST /api/config.
+    """
+    cfg, *_ = _services(request)
+    _require_confirm(cfg)
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    fields: dict[str, Any] = dict(body)
+    nested = body.get("model")
+    if isinstance(nested, dict):
+        fields = {**nested, **{k: v for k, v in body.items() if k != "model"}}
+    unknown = sorted(set(fields) - _MODEL_SETTABLE_FIELDS)
+    if unknown:
+        raise HTTPException(
+            status_code=400, detail=f"unknown model fields: {unknown}")
+    provider = str(fields.get("provider") or "").strip()
+    model = str(fields.get("model") or "").strip()
+    if not provider or not model:
+        raise HTTPException(
+            status_code=400, detail="provider and model are required")
+    if any(_looks_secret(k, v) for k, v in fields.items()):
+        raise HTTPException(
+            status_code=400,
+            detail="model updates must not contain api keys, tokens or "
+                   "secrets — use the /api/keys endpoints for credentials",
+        )
+    updates: dict[str, Any] = {
+        k: v for k, v in fields.items() if v is not None}
+    updates["provider"] = provider
+    updates["model"] = model
+    # Fill a missing/blank endpoint from the provider catalog when known;
+    # otherwise keep whatever endpoint is already configured.
+    endpoint = str(updates.get("endpoint") or "").strip()
+    if not endpoint:
+        catalog = _optional_module("jarvis.core.providers_catalog")
+        spec = None
+        if catalog is not None:
+            try:
+                spec = catalog.get_provider_spec(provider)
+            except Exception:  # noqa: BLE001 - catalog lookup is best-effort
+                spec = None
+        if spec is not None and getattr(spec, "default_base_url", ""):
+            updates["endpoint"] = getattr(spec, "default_base_url")
+        else:
+            updates.pop("endpoint", None)
+    # Validate the merged config through Pydantic before touching disk.
+    try:
+        current = cfg.model_dump(mode="json")
+    except Exception:
+        current = {}
+    from ...config import Config as _Config, _deep_merge
+
+    merged = _deep_merge(current, {"model": updates})
+    try:
+        _Config(**merged)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"invalid model: {e}")
+    cfg_path = Path(getattr(cfg, "project_root", ".")) / "config.yaml"
+    try:
+        raw = {}
+        if cfg_path.exists():
+            with cfg_path.open("r", encoding="utf-8") as f:
+                raw = yaml.safe_load(f) or {}
+        merged_raw = _deep_merge(raw, {"model": updates})
+        with cfg_path.open("w", encoding="utf-8") as f:
+            yaml.safe_dump(merged_raw, f, allow_unicode=True, sort_keys=False)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"could not write config: {e}")
+    new_model = merged.get("model", {}) if isinstance(merged, dict) else {}
+    return {
+        "ok": True,
+        "applied": sorted(updates),
+        "requires_restart": True,
+        "config_path": str(cfg_path),
+        "current": {
+            "provider": new_model.get("provider"),
+            "model": new_model.get("model"),
+            "endpoint": new_model.get("endpoint"),
+            "temperature": new_model.get("temperature"),
+            "max_tokens": new_model.get("max_tokens"),
+            "fallback_provider": new_model.get("fallback_provider"),
+            "fallback_model": new_model.get("fallback_model"),
+        },
+    }
+
+
 @router.get("/config")
 async def config_get(request: Request):
     cfg, *_ = _services(request)
