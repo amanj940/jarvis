@@ -12,11 +12,19 @@ Safety rules, baked in — not just documented:
 """
 from __future__ import annotations
 
+import logging
+
 from ..base import PluginInfo, tool
 from ...core.permissions import Permission
-from .shopify import ShopifyClient, ShopifyNotConfigured
+from .shopify import ShopifyClient
 from .store import EcommerceStore
 from .stripe import StripeClient, StripeNotConfigured
+
+log = logging.getLogger("jarvis.ecommerce.sync")
+
+# Resources synced, in order. Each is fetched and cached independently:
+# a failed resource no longer aborts the whole sync.
+_SYNC_RESOURCES = ("products", "orders", "customers")
 
 
 def _store(registry) -> EcommerceStore:
@@ -144,7 +152,7 @@ def register(registry):
 
     @tool(
         name="ecommerce_sync_catalog",
-        description="DRAFT sync: pull products, orders and customers from Shopify into the local cache only. Never pushes changes to Shopify. Needs SHOPIFY_SHOP_URL + SHOPIFY_ACCESS_TOKEN.",
+        description="DRAFT sync: pull products, orders and customers from Shopify into the local cache only. Never pushes changes to Shopify. Needs SHOPIFY_SHOP_URL + SHOPIFY_ACCESS_TOKEN. Partial/resumable: each resource is fetched and cached on its own, per-item failures are recorded not fatal, and progress is persisted per resource so a re-run resumes without duplicating.",
         permission=Permission.CAUTION,
         parameters={
             "type": "object",
@@ -158,32 +166,82 @@ def register(registry):
             return ("Shopify is not configured — set SHOPIFY_SHOP_URL and "
                     "SHOPIFY_ACCESS_TOKEN (see docs/ecommerce.md). "
                     "Nothing was synced.")
-        try:
-            products = await client.list_products(limit=limit)
-            orders = await client.list_orders(limit=limit)
-            customers = await client.list_customers(limit=limit)
-        except (ShopifyNotConfigured, RuntimeError) as e:
-            return f"Shopify sync failed: {e}"
         shop = client.shop_url
-        for p in products:
-            store.upsert_product(p, shop=shop)
-        for o in orders:
-            store.upsert_order(o, shop=shop)
-        for c in customers:
-            store.upsert_customer(c, shop=shop)
-        store.set_sync_state(shop, "products", len(products))
-        store.set_sync_state(shop, "orders", len(orders))
-        store.set_sync_state(shop, "customers", len(customers))
+        # 1. Fetch each resource on its own: one failed fetch is recorded
+        # and the other resources still sync (old code aborted everything
+        # on the first failed list_* call, caching nothing).
+        fetchers = {
+            "products": client.list_products,
+            "orders": client.list_orders,
+            "customers": client.list_customers,
+        }
+        fetched: dict[str, list] = {}
+        fetch_errors: dict[str, str] = {}
+        for resource in _SYNC_RESOURCES:
+            try:
+                fetched[resource] = await fetchers[resource](limit=limit)
+            except Exception as exc:  # noqa: BLE001 — one bad resource skips
+                log.warning("ecommerce sync: %s fetch failed, skipping: %s",
+                            resource, exc)
+                fetched[resource] = []
+                fetch_errors[resource] = str(exc)
+        # 2. Upsert each item on its own: one bad row is recorded and the
+        # rest still cache. Upserts key on remote_id, so a re-run refreshes
+        # already-cached rows instead of duplicating them.
+        upserts = {
+            "products": store.upsert_product,
+            "orders": store.upsert_order,
+            "customers": store.upsert_customer,
+        }
+        cached: dict[str, int] = {}
+        item_errors: dict[str, list[str]] = {}
+        for resource in _SYNC_RESOURCES:
+            ok = 0
+            errors: list[str] = []
+            for item in fetched[resource]:
+                try:
+                    upserts[resource](item, shop=shop)
+                    ok += 1
+                except Exception as exc:  # noqa: BLE001 — per-item, not fatal
+                    errors.append(
+                        f"{resource} "
+                        f"{(item or {}).get('remote_id', '?')}: {exc}")
+                    log.warning("ecommerce sync: skipping bad %s item: %s",
+                                resource, exc)
+            cached[resource] = ok
+            item_errors[resource] = errors
+            # 3. Persist progress per resource, as it completes — a run
+            # that dies halfway still leaves usable progress behind.
+            detail = fetch_errors.get(resource) or "; ".join(errors[:3])
+            store.set_sync_state(
+                shop, resource, ok,
+                errors=len(errors) + (1 if resource in fetch_errors else 0),
+                error=detail)
         counts = store.counts()
-        return (
-            f"DRAFT SYNC complete for {shop} — local cache only, "
-            "nothing was pushed to Shopify:\n"
-            f"  products cached: {len(products)} (total in cache: {counts['products']})\n"
-            f"  orders cached: {len(orders)} (total in cache: {counts['orders']})\n"
-            f"  customers cached: {len(customers)} (total in cache: {counts['customers']})\n"
-            "Review the cached data with ecommerce_list_products / "
-            "ecommerce_get_order / ecommerce_list_customers before acting on it."
-        )
+        failed = [r for r in _SYNC_RESOURCES
+                  if r in fetch_errors or item_errors[r]]
+        headline = ("DRAFT SYNC complete" if not failed
+                    else "DRAFT SYNC partial — some resources failed, "
+                         "the rest are cached and a re-run resumes")
+        lines = [f"{headline} for {shop} — local cache only, "
+                 "nothing was pushed to Shopify:"]
+        for resource in _SYNC_RESOURCES:
+            line = (f"  {resource} cached: {cached[resource]} "
+                    f"(total in cache: {counts[resource]})")
+            if resource in fetch_errors:
+                line += f" — FETCH FAILED: {fetch_errors[resource]}"
+            elif item_errors[resource]:
+                line += (f" — {len(item_errors[resource])} item(s) failed: "
+                         + "; ".join(item_errors[resource][:3]))
+            lines.append(line)
+        if failed:
+            lines.append("Re-run ecommerce_sync_catalog to retry the failed "
+                         "items — already-cached rows are refreshed, not "
+                         "duplicated.")
+        lines.append("Review the cached data with ecommerce_list_products / "
+                     "ecommerce_get_order / ecommerce_list_customers before "
+                     "acting on it.")
+        return "\n".join(lines)
 
     registry.add_pending("ecommerce")
     registry.register_plugin(PluginInfo(
