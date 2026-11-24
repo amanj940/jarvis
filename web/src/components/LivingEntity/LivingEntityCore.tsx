@@ -33,6 +33,10 @@ import {
 import FloatingHoloHUD from "./FloatingHoloHUD";
 import HudRings from "./HudRings";
 import EarthGlobe, { GlobeErrorBoundary } from "../Globe/EarthGlobe";
+import {
+  GLOBE_ZOOM_MAX_DISTANCE,
+  GLOBE_ZOOM_MIN_DISTANCE,
+} from "../Globe/cities";
 import { getHudTheme, HUD_THEMES } from "../../lib/hudTheme";
 import { useReducedMotion } from "../../lib/useReducedMotion";
 
@@ -236,8 +240,18 @@ export default function LivingEntityCore() {
     return () => document.removeEventListener("visibilitychange", onVisibility);
   }, []);
 
-  const handleEntityClick = () => {
-    // Click on entity toggles microphone
+  // Pointer-down position, for the click-vs-drag guard below.
+  const downPosRef = useRef<{ x: number; y: number } | null>(null);
+  const handlePointerDown = (e: React.PointerEvent) => {
+    downPosRef.current = { x: e.clientX, y: e.clientY };
+  };
+
+  const handleEntityClick = (e: React.MouseEvent) => {
+    // Click on entity toggles microphone — but a drag (rotate) or a
+    // scroll-zoom gesture must NOT toggle it. Ignore clicks whose pointer
+    // travelled more than a few pixels since pointer-down.
+    const d = downPosRef.current;
+    if (d && Math.hypot(e.clientX - d.x, e.clientY - d.y) > 6) return;
     window.dispatchEvent(new CustomEvent("jarvis:toggle-mic"));
   };
 
@@ -251,6 +265,7 @@ export default function LivingEntityCore() {
         id="living-entity-container"
         className="absolute inset-0 flex items-center justify-center overflow-hidden"
         onClick={handleEntityClick}
+        onPointerDown={handlePointerDown}
         title="انقر لتشغيل أو إيقاف المايكروفون (Click to toggle microphone)"
       >
         {/* 3D Volumetric Particle Canvas */}
@@ -275,7 +290,10 @@ export default function LivingEntityCore() {
           )}
           <OrbitControls
             target={[0, 0, 0]}
-            enableZoom={false}
+            enableZoom
+            minDistance={GLOBE_ZOOM_MIN_DISTANCE}
+            maxDistance={GLOBE_ZOOM_MAX_DISTANCE}
+            zoomSpeed={0.9}
             enablePan={false}
             rotateSpeed={0.65}
             dampingFactor={0.08}
