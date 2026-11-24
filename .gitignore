@@ -45,3 +45,4 @@ data/research/
 
 # Runtime scratch (HuggingFace cache probes, temp downloads)
 data/tmp/
+data/youtube_token.json
