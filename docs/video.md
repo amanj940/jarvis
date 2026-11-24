@@ -52,6 +52,33 @@ in the result — the job still finishes.
   first scene (`ffmpeg -ss <d1/2> -i draft.mp4 -frames:v 1 -q:v 2`).
   A thumbnail failure only warns — the video is unaffected.
 
+## Slice 3 — background music (ducked under the narration)
+
+An optional music track under the narration, mixed with sidechain
+ducking: the music drops while narration speaks and comes back between
+lines (and plays at full level over silent scenes). Configure it under
+`video.music` in `config.yaml`:
+
+```yaml
+video:
+  music:
+    enabled: false   # off by default — renders exactly as before
+    volume: 0.15     # music level, 0..1
+    path: "data/music/bg.mp3"  # local audio file (mp3/wav/ogg)
+```
+
+- **One extra ffmpeg pass, audio only.** The music is looped
+  (`-stream_loop -1`) to cover the whole video; the video stream is
+  copied and only the audio is re-encoded (AAC 128k, same as the scene
+  clips), so it costs no extra RAM and no extra video encode.
+  Ducking is `sidechaincompress` driven by the narration
+  (threshold 0.03, ratio 8, attack 50ms, release 500ms).
+- **Safe failures.** A missing or broken music file only warns — the
+  video renders without music. Enabled with no `path` also only warns.
+  The result reports `music`, `music_path` and `music_volume`.
+- **No downloads.** The music file must already exist on the laptop;
+  Jarvis never fetches music. Pick something you have the rights to use.
+
 ## Tools
 
 | Tool | Permission | What it does |
