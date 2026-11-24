@@ -8,7 +8,7 @@ defaults below deliberately mirror `config.yaml`, so a missing or partial
 config file behaves exactly like the shipped one. If you change a value in
 `config.yaml`, update the matching default here too.
 
-The assistant persona is NOT stored here: it lives in `persona/jarvis.md`
+The assistant persona is NOT stored here: it lives in `persona/jarvis-ar.md`
 and is loaded by `load_config` (see `AssistantConfig.persona_file`). An
 inline `persona:` in `config.yaml` still works and takes precedence.
 """
@@ -115,7 +115,9 @@ class AssistantConfig(BaseModel):
     persona: str = "You are JARVIS, a calm, precise, proactive local AI assistant."
     # Single source of truth for the full persona text. Relative paths are
     # resolved against the config file's directory, then the project root.
-    persona_file: str = "persona/jarvis.md"
+    # Default is the Arabic persona; set A.persona_file: persona/jarvis.md
+    # for English.
+    persona_file: str = "persona/jarvis-ar.md"
 
 
 class MissionConfig(BaseModel):
@@ -186,10 +188,11 @@ class VoiceConfig(BaseModel):
     stt_initial_prompt: str | None = None
     preload_models: bool = False
     provider: str = "auto"  # auto | piper | edge_tts | nvidia_riva
-    edge_voice: str = "en-GB-ThomasNeural"
+    edge_voice: str = "ar-SA-HamedNeural"  # Hamed Neural (Saudi Arabic) — default voice
     edge_rate: str = "-6%"
     edge_pitch: str = "+0Hz"
-    # Piper (community JARVIS model, closest to Paul Bettany)
+    # Piper (community JARVIS model, closest to Paul Bettany).
+    # ENGLISH-ONLY model — Arabic text skips Piper (see jarvis/models/tts.py).
     piper_enabled: bool = True  # mirrors config.yaml
     piper_model: str = "data/voices/jarvis.onnx"
     piper_speaker: int = 0
