@@ -188,3 +188,111 @@ async def mcp_test(request: Request, name: str,
                 "tools_count": 0, "tools": [], "duration_ms": 0}
     probe = await _probe(cfg, _clamp_timeout(timeout))
     return {"ok": probe["reachable"], "name": name, **probe}
+
+
+BUILTIN_MCP_PRESETS = [
+    {
+        "id": "filesystem",
+        "name": "filesystem",
+        "label": "Filesystem",
+        "icon": "📁",
+        "desc": "Local workspace filesystem",
+        "auto_detected": True,
+        "detection_info": "JARVIS Workspace",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+    },
+    {
+        "id": "github",
+        "name": "github",
+        "label": "GitHub",
+        "icon": "🐙",
+        "desc": "Repos, PRs, issues",
+        "auto_detected": bool(shutil.which("gh")),
+        "detection_info": "gh CLI detected" if shutil.which("gh") else "Requires gh / PAT",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-github"],
+    },
+    {
+        "id": "sqlite",
+        "name": "sqlite",
+        "label": "SQLite",
+        "icon": "🗃",
+        "desc": "JARVIS databases",
+        "auto_detected": True,
+        "detection_info": "models.db ready",
+        "command": "uvx",
+        "args": ["mcp-server-sqlite", "--db-path", "data/models.db"],
+    },
+    {
+        "id": "puppeteer",
+        "name": "puppeteer",
+        "label": "Puppeteer",
+        "icon": "🤖",
+        "desc": "Browser automation",
+        "auto_detected": bool(shutil.which("npx")),
+        "detection_info": "NPX Ready" if shutil.which("npx") else "Requires Node.js",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-puppeteer"],
+    },
+    {
+        "id": "brave-search",
+        "name": "brave-search",
+        "label": "Brave Search",
+        "icon": "🔍",
+        "desc": "Live web search & news",
+        "auto_detected": False,
+        "detection_info": "Requires Key",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-brave-search"],
+    },
+]
+
+
+@router.get("/mcp/presets")
+async def mcp_presets(request: Request):
+    manager = _manager(request)
+    configs = manager.load_configs()
+    configured_names = set(configs.keys())
+
+    presets = []
+    for p in BUILTIN_MCP_PRESETS:
+        item = dict(p)
+        item["already_configured"] = p["id"] in configured_names
+        proc = manager.servers.get(p["id"])
+        item["is_running"] = bool(proc and proc.connected)
+        presets.append(item)
+    return {"ok": True, "presets": presets}
+
+
+@router.post("/mcp/presets/{preset_id}/connect")
+async def mcp_connect_preset(request: Request, preset_id: str):
+    preset = next((p for p in BUILTIN_MCP_PRESETS if p["id"] == preset_id), None)
+    if not preset:
+        return JSONResponse({"ok": False, "error": f"unknown MCP preset: {preset_id!r}"}, status_code=404)
+
+    manager = _manager(request)
+    configs = manager.load_configs()
+    name = preset["name"]
+    cfg = MCPServerConfig(
+        name=name,
+        command=preset["command"],
+        args=list(preset["args"]),
+        env={},
+        enabled=True,
+        description=preset.get("desc", ""),
+    )
+    configs[name] = cfg
+    raw_dict = {
+        k: {
+            "command": v.command,
+            "args": v.args,
+            "env": v.env,
+            "enabled": v.enabled,
+            "description": v.description,
+        }
+        for k, v in configs.items()
+    }
+    manager.save_configs(raw_dict)
+    return {"ok": True, "server": name}
+

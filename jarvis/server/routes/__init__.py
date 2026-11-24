@@ -38,6 +38,10 @@ from .shopify_webhooks import router as shopify_webhooks_router
 from .mcp import router as mcp_router
 from .integrations import router as integrations_router
 from .plugins import router as plugins_router
+from .admin_models import router as admin_models_router
+from .keys_admin import router as keys_admin_router
+from .council_admin import router as council_admin_router
+from .swarm_admin import router as swarm_admin_router
 
 router = APIRouter()
 router.include_router(system_router)
@@ -51,6 +55,10 @@ router.include_router(shopify_webhooks_router)
 router.include_router(mcp_router)
 router.include_router(integrations_router)
 router.include_router(plugins_router)
+router.include_router(admin_models_router)
+router.include_router(keys_admin_router)
+router.include_router(council_admin_router)
+router.include_router(swarm_admin_router)
 
 __all__ = [
     "router",
