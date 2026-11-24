@@ -28,12 +28,23 @@ CREATE TABLE IF NOT EXISTS leads (
     score REAL NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'new',
     notes TEXT,
+    lat REAL,
+    lon REAL,
+    location TEXT,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status, score);
 CREATE INDEX IF NOT EXISTS idx_leads_kind ON leads(kind);
 """
+
+# Columns added after the first release. ``CREATE TABLE IF NOT EXISTS``
+# never touches an existing table, so old databases get them here.
+_MIGRATIONS = (
+    ("lat", "REAL"),
+    ("lon", "REAL"),
+    ("location", "TEXT"),
+)
 
 TRACKING_PARAMS = {"utm_source", "utm_medium", "utm_campaign", "utm_term",
                    "utm_content", "fbclid", "gclid", "ref", "referrer"}
@@ -62,6 +73,10 @@ class LeadsStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._conn() as c:
             c.executescript(SCHEMA)
+            existing = {r[1] for r in c.execute("PRAGMA table_info(leads)")}
+            for col, decl in _MIGRATIONS:
+                if col not in existing:
+                    c.execute(f"ALTER TABLE leads ADD COLUMN {col} {decl}")
 
     @contextmanager
     def _conn(self):
@@ -74,12 +89,24 @@ class LeadsStore:
             conn.close()
 
     def add_lead(self, url: str, title: str, source: str = "", kind: str = "",
-                 score: float = 0.0, notes: str = "") -> tuple[dict, bool]:
-        """Insert a lead; returns (lead, created). Duplicates return the old row."""
+                 score: float = 0.0, notes: str = "",
+                 lat: float | None = None, lon: float | None = None,
+                 location: str = "") -> tuple[dict, bool]:
+        """Insert a lead; returns (lead, created). Duplicates return the old row.
+
+        ``lat`` / ``lon`` are optional explicit coordinates (used by the
+        intelligence layer to pin the lead on the globe); out-of-range
+        values are rejected. ``location`` is a human-readable place name.
+        """
         if not url or not url.strip().lower().startswith(("http://", "https://")):
             raise ValueError("lead needs an http(s) URL")
         if not (title or "").strip():
             raise ValueError("lead needs a title")
+        if (lat is None) != (lon is None):
+            raise ValueError("lat and lon go together — set both or neither")
+        if lat is not None and not (-90.0 <= float(lat) <= 90.0
+                                    and -180.0 <= float(lon) <= 180.0):
+            raise ValueError("lat must be -90..90 and lon -180..180")
         h = url_hash(url)
         now = time.time()
         with self._conn() as c:
@@ -87,10 +114,11 @@ class LeadsStore:
             if row:
                 return dict(row), False
             cur = c.execute(
-                "INSERT INTO leads(url_hash,url,title,source,kind,score,status,notes,created_at,updated_at)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO leads(url_hash,url,title,source,kind,score,status,notes,"
+                "lat,lon,location,created_at,updated_at)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (h, url.strip(), title.strip(), source, kind, float(score),
-                 "new", notes, now, now),
+                 "new", notes, lat, lon, location or "", now, now),
             )
             row = c.execute("SELECT * FROM leads WHERE id=?", (cur.lastrowid,)).fetchone()
             return dict(row), True
