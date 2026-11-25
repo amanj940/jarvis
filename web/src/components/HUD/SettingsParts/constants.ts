@@ -200,3 +200,43 @@ export interface PlatformModalTarget {
   serverConfig?: any;
   integrationConfig?: any;
 }
+
+export interface McpToolItem {
+  name: string;
+  description?: string;
+  inputSchema?: {
+    type?: string;
+    properties?: Record<string, { type?: string; description?: string }>;
+    required?: string[];
+  };
+}
+
+export interface McpServerItem {
+  name: string;
+  command: string;
+  args: string[];
+  env?: Record<string, string>;
+  enabled: boolean;
+  description: string;
+  connected?: boolean;
+  status?: string;
+  tools_count?: number;
+  tools?: (string | McpToolItem)[];
+  error?: string | null;
+}
+
+export interface McpPresetItem {
+  id: string;
+  name: string;
+  label: string;
+  icon: string;
+  desc: string;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  auto_detected: boolean;
+  detection_info: string;
+  token_preview?: string;
+  already_configured: boolean;
+  is_running: boolean;
+}
