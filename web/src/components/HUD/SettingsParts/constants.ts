@@ -133,3 +133,70 @@ export interface ToolItem {
   plugin: string;
   parameters?: any;
 }
+
+export interface IntegrationsConfig {
+  home_assistant: {
+    url: string;
+    token: string;
+    enabled: boolean;
+    has_token?: boolean;
+  };
+  calendar: {
+    ical_url: string;
+    enabled: boolean;
+  };
+  email: {
+    smtp_host: string;
+    smtp_port: number;
+    username: string;
+    password?: string;
+    enabled: boolean;
+    has_credentials?: boolean;
+  };
+  telegram: {
+    bot_token: string;
+    chat_id: string;
+    enabled: boolean;
+    has_token?: boolean;
+  };
+  facebook?: {
+    page_id: string;
+    page_access_token: string;
+    enabled: boolean;
+    has_token?: boolean;
+  };
+  youtube?: {
+    client_id: string;
+    client_secret: string;
+    refresh_token: string;
+    channel_id: string;
+    enabled: boolean;
+    has_secret?: boolean;
+    has_token?: boolean;
+  };
+  instagram?: {
+    user_id: string;
+    access_token: string;
+    enabled: boolean;
+    has_token?: boolean;
+  };
+  tiktok?: {
+    client_key: string;
+    client_secret: string;
+    access_token: string;
+    open_id: string;
+    enabled: boolean;
+    has_secret?: boolean;
+    has_token?: boolean;
+  };
+  social_platforms?: Record<string, any>;
+}
+
+// Target passed to PlatformDetailModal when a platform card is opened.
+export interface PlatformModalTarget {
+  id: string;
+  name: string;
+  icon: string;
+  serverConfig?: any;
+  integrationConfig?: any;
+}
