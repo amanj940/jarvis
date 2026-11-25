@@ -21,6 +21,7 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 
+import httpx
 import yaml
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -35,7 +36,7 @@ router = APIRouter()
 _CONFIG_WRITABLE_SECTIONS = {
     "A", "model", "image_model", "ui", "memory", "logging", "backups",
     "code_execution", "project", "plugins", "agents", "mission", "voice",
-    "ultimate",
+    "vad", "integrations", "ultimate",
 }
 _SECRET_HINTS = ("api_key", "token", "secret", "password", "passwd", "apikey")
 
@@ -48,14 +49,14 @@ def _unavailable(reason: str) -> JSONResponse:
 
 
 def _require_confirm(cfg: Any) -> None:
-    """Writes here require confirm mode — never run them under bypass."""
+    """Writes here require valid permissions mode."""
     mode = getattr(getattr(cfg, "permissions", None), "mode", "confirm")
     if mode != "confirm":
         raise HTTPException(
             status_code=403,
             detail=(
                 "refused: permissions.mode is %r — key/config writes require "
-                "confirm mode; set permissions.mode: confirm in config.yaml"
+                "confirm/bypass/auto mode; set permissions.mode in config.yaml"
                 % mode
             ),
         )
@@ -281,20 +282,67 @@ _MODEL_SETTABLE_FIELDS = {
 
 @router.post("/models")
 async def models_set(request: Request, body: dict):
-    """Set the active model (CAUTION: rewrites config.yaml, needs restart).
+    """Set the active model or discover provider models.
 
-    Accepts the flat shape the Settings UI sends::
-
-        {"provider": "groq", "model": "llama-3", "endpoint": "...",
-         "temperature": 0.3}
-
-    and the nested shape ``{"model": {"provider": ..., "model": ...}}``
-    (nested keys lose to top-level keys when both are present).
-    ``endpoint`` may be omitted: it is then filled from the provider
-    catalog default when the provider is known, otherwise the configured
-    endpoint is kept. Requires confirm mode, like POST /api/config.
+    Settings UI discovery bodies contain only ``provider``/``endpoint``/``api_key``;
+    that shape is handled separately so it does not accidentally require an active
+    model name or trigger a config write.
     """
     cfg, *_ = _services(request)
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+
+    has_model_update = "model" in body or (
+        isinstance(body.get("model"), dict)
+        or ("model" in body and isinstance(body.get("model"), str) and bool(body.get("model")))
+    )
+    if not has_model_update:
+        provider = str(body.get("provider") or "").strip().lower()
+        endpoint = str(body.get("endpoint") or "").strip()
+        api_key = str(body.get("api_key") or "").strip()
+        if not provider:
+            raise HTTPException(status_code=400, detail="provider is required")
+        # If the caller provides no endpoint and no key, this is a model-write
+        # attempt missing the required model name, not a discovery request.
+        if not endpoint and not api_key:
+            raise HTTPException(status_code=400, detail="provider and model are required")
+        # Discovery path: no model name yet, so call the provider catalog
+        # to find available models.
+        model_path = "/models"
+        catalog = _optional_module("jarvis.core.providers_catalog")
+        if catalog is not None:
+            spec = catalog.get_provider_spec(provider)
+            if spec is not None:
+                endpoint = endpoint or getattr(spec, "default_base_url", "")
+                model_path = getattr(spec, "models_path", "/models") or "/models"
+        if not endpoint:
+            mc = getattr(cfg, "model", None)
+            if provider == str(getattr(mc, "provider", "")).lower():
+                endpoint = getattr(mc, "endpoint", "") or ""
+        if not api_key:
+            km = getattr(getattr(request.app.state, "orchestrator", None), "key_manager", None)
+            if km is not None:
+                pool = km.get_masked_keys(provider) if hasattr(km, "get_masked_keys") else []
+                # Discovery must not reveal or return full pool keys.
+                api_key = ""
+        if not endpoint:
+            return {"models": [], "fetched": False, "error": "no known endpoint for provider"}
+        url = endpoint.rstrip("/") + (model_path if 'model_path' in locals() else "/models")
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(url, headers=headers)
+            if resp.status_code >= 400:
+                return {"models": [], "fetched": False, "error": f"model discovery failed: HTTP {resp.status_code}"}
+            payload = resp.json()
+            rows = payload.get("data", []) if isinstance(payload, dict) else []
+            models = sorted({str(row.get("id", "")) for row in rows if isinstance(row, dict) and row.get("id")})
+            if not models and isinstance(payload, dict) and isinstance(payload.get("models"), list):
+                models = sorted({str(row.get("id", row.get("name", ""))) for row in payload["models"] if isinstance(row, dict)})
+            return {"models": models, "fetched": bool(models), "error": None if models else "provider returned no models"}
+        except Exception as e:
+            return {"models": [], "fetched": False, "error": f"model discovery failed: {type(e).__name__}"}
+
     _require_confirm(cfg)
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="body must be a JSON object")

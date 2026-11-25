@@ -781,7 +781,6 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
             fallback_provider: enableFallback ? fallbackProvider : null,
             fallback_model: enableFallback ? fallbackModel : null,
           },
-          api_keys: nonEmptyKeys,
           voice: {
             provider: voiceProvider,
             edge_voice: edgeVoiceAr,
@@ -812,7 +811,6 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
             show_status_bar: showStatusBar,
             refresh_interval_ms: refreshInterval,
           },
-          permissions: { mode: permMode },
           integrations,
           plugins: pluginsMap,
           ultimate: {
@@ -861,6 +859,8 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
         fallback_provider: enableFallback ? fallbackProvider : null,
         fallback_model: enableFallback ? fallbackModel : null,
       },
+      // Prevent bulk config saves from sending API secrets or restricted permission changes.
+      // (FG-019/020: Only allow safe fields in export/import/reset, never api_keys or permissions.)
       voice: {
         provider: voiceProvider,
         edge_voice: edgeVoiceAr,
@@ -891,7 +891,7 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
         show_status_bar: showStatusBar,
         refresh_interval_ms: refreshInterval,
       },
-      permissions: { mode: permMode },
+      // permissions intentionally excluded from export/import/reset (FG-019/020)
       integrations,
       plugins: pluginsMap,
       ultimate: {
