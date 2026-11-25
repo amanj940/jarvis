@@ -124,3 +124,12 @@ export const PROVIDER_INFO: Record<string, ProviderInfo> = {
 
 // ── Toast notification ──────────────────────────────────────────────────────
 export interface Toast { id: number; text: string; kind: "ok" | "error"; }
+
+// Tool registry entry returned by GET /api/tools (shared by Settings + ToolsTab).
+export interface ToolItem {
+  name: string;
+  description: string;
+  permission: string;
+  plugin: string;
+  parameters?: any;
+}
