@@ -265,3 +265,30 @@ export interface KeyPoolItem {
   successes?: number;
   last_error?: string | null;
 }
+
+// One row of the model benchmark leaderboard (Council tab).
+export interface BenchmarkEntry {
+  provider: string;
+  model: string;
+  status: string;
+  latency_ms: number;
+  tps: number;
+  reasoning_score: number;
+  quota_remaining_requests: string;
+  assigned_seat?: string;
+  seat_role?: string;
+  seat_icon?: string;
+  error_message?: string;
+}
+
+// One council seat in the dynamic roster (Council tab).
+export interface RosterMember {
+  id: string;
+  name: string;
+  provider: string;
+  model: string;
+  icon: string;
+  role: string;
+  specialty: string;
+  active: boolean;
+}
