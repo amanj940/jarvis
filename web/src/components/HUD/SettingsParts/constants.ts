@@ -254,3 +254,14 @@ export const APP_VERSION = "0.2.0";
 
 // Shape of the backend health snapshot kept in the global store.
 export type Health = ReturnType<typeof useStore.getState>["health"];
+
+// One API key in a provider's multi-key pool (GET /api/keys).
+export interface KeyPoolItem {
+  masked: string;
+  key_preview?: string;
+  status: string;
+  cooldown_remaining?: number;
+  failures?: number;
+  successes?: number;
+  last_error?: string | null;
+}
