@@ -52,6 +52,13 @@ import {
 } from "./SettingsParts/constants";
 import { Toggle } from "./SettingsParts/ui";
 import ToolsTab from "./SettingsParts/ToolsTab";
+import {
+  VAD_DEFAULTS,
+  vadApplyImported,
+  vadFromServer,
+  vadToServer,
+  type VadConfig,
+} from "./SettingsParts/vadConfig";
 import IntegrationsTab from "./SettingsParts/IntegrationsTab";
 import McpTab from "./SettingsParts/McpTab";
 import SystemDisplaySection from "./SettingsParts/SystemDisplaySection";
@@ -329,21 +336,10 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
   const [edgeVoiceEn, setEdgeVoiceEn] = useState("en-GB-ThomasNeural");
   const edgeVoice = chatLanguage === "ar" ? edgeVoiceAr : edgeVoiceEn;
 
-  // VAD Calibration state
-  const [vadSilenceThreshold, setVadSilenceThreshold] = useState(0.08);
-  const [vadSilenceTimeoutMs, setVadSilenceTimeoutMs] = useState(600);
-  const [vadMinRecordingMs, setVadMinRecordingMs] = useState(500);
-  const [vadMaxRecordingMs, setVadMaxRecordingMs] = useState(8000);
-  const [vadBaselineWindowMs, setVadBaselineWindowMs] = useState(1200);
-  const [vadBaselineMultiplier, setVadBaselineMultiplier] = useState(2.2);
-  const [vadSileroThreshold, setVadSileroThreshold] = useState(0.5);
-  const [vadSileroMinSilenceMs, setVadSileroMinSilenceMs] = useState(500);
-  const [vadBargeInMultiplier, setVadBargeInMultiplier] = useState(3.5);
-  const [vadBargeInFloor, setVadBargeInFloor] = useState(0.15);
-  const [vadBargeInSustainMs, setVadBargeInSustainMs] = useState(250);
-  const [vadSttCoalesceMs, setVadSttCoalesceMs] = useState(500);
-  const [vadHallucinationFilter, setVadHallucinationFilter] = useState(true);
-  const [vadFillerFilter, setVadFillerFilter] = useState(true);
+  // VAD Calibration state — one object; field list, wire names and default
+  // tables live in SettingsParts/vadConfig.ts.
+  const [vad, setVad] = useState<VadConfig>(VAD_DEFAULTS);
+  const patchVad = (patch: Partial<VadConfig>) => setVad((v) => ({ ...v, ...patch }));
 
   // UI settings
   const [theme, setTheme] = useState("jarvis");
@@ -470,22 +466,7 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
           setChatLanguage(j.voice.chat_language ?? "en");
           useStore.getState().setSpeechLanguage(j.voice.chat_language === "ar" ? "ar" : "en");
         }
-        if (j.vad) {
-          setVadSilenceThreshold(j.vad.silence_threshold ?? 0.08);
-          setVadSilenceTimeoutMs(j.vad.silence_timeout_ms ?? 600);
-          setVadMinRecordingMs(j.vad.min_recording_ms ?? 300);
-          setVadMaxRecordingMs(j.vad.max_recording_ms ?? 30000);
-          setVadBaselineWindowMs(j.vad.baseline_window_ms ?? 2000);
-          setVadBaselineMultiplier(j.vad.baseline_multiplier ?? 2.2);
-          setVadSileroThreshold(j.vad.silero_threshold ?? 0.5);
-          setVadSileroMinSilenceMs(j.vad.silero_min_silence_duration_ms ?? 500);
-          setVadBargeInMultiplier(j.vad.barge_in_multiplier ?? 3.0);
-          setVadBargeInFloor(j.vad.barge_in_floor ?? 0.15);
-          setVadBargeInSustainMs(j.vad.barge_in_sustain_ms ?? 120);
-          setVadSttCoalesceMs(j.vad.stt_coalesce_ms ?? 120);
-          setVadHallucinationFilter(j.vad.hallucination_filter_enabled ?? true);
-          setVadFillerFilter(j.vad.filler_filter_enabled ?? true);
-        }
+        if (j.vad) setVad(vadFromServer(j.vad));
         if (j.ui) {
           setTheme(j.ui.theme ?? "jarvis");
           setShowEmojis(j.ui.emoji ?? true);
@@ -619,22 +600,7 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
             pyttsx3_volume: ttsVolume,
             chat_language: chatLanguage,
           },
-          vad: {
-            silence_threshold: vadSilenceThreshold,
-            silence_timeout_ms: vadSilenceTimeoutMs,
-            min_recording_ms: vadMinRecordingMs,
-            max_recording_ms: vadMaxRecordingMs,
-            baseline_window_ms: vadBaselineWindowMs,
-            baseline_multiplier: vadBaselineMultiplier,
-            silero_threshold: vadSileroThreshold,
-            silero_min_silence_duration_ms: vadSileroMinSilenceMs,
-            barge_in_multiplier: vadBargeInMultiplier,
-            barge_in_floor: vadBargeInFloor,
-            barge_in_sustain_ms: vadBargeInSustainMs,
-            stt_coalesce_ms: vadSttCoalesceMs,
-            hallucination_filter_enabled: vadHallucinationFilter,
-            filler_filter_enabled: vadFillerFilter,
-          },
+          vad: vadToServer(vad),
           ui: {
             theme,
             emoji: showEmojis,
@@ -699,22 +665,7 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
         pyttsx3_volume: ttsVolume,
         chat_language: chatLanguage,
       },
-      vad: {
-        silence_threshold: vadSilenceThreshold,
-        silence_timeout_ms: vadSilenceTimeoutMs,
-        min_recording_ms: vadMinRecordingMs,
-        max_recording_ms: vadMaxRecordingMs,
-        baseline_window_ms: vadBaselineWindowMs,
-        baseline_multiplier: vadBaselineMultiplier,
-        silero_threshold: vadSileroThreshold,
-        silero_min_silence_duration_ms: vadSileroMinSilenceMs,
-        barge_in_multiplier: vadBargeInMultiplier,
-        barge_in_floor: vadBargeInFloor,
-        barge_in_sustain_ms: vadBargeInSustainMs,
-        stt_coalesce_ms: vadSttCoalesceMs,
-        hallucination_filter_enabled: vadHallucinationFilter,
-        filler_filter_enabled: vadFillerFilter,
-      },
+      vad: vadToServer(vad),
       ui: {
         theme,
         emoji: showEmojis,
@@ -773,22 +724,7 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
             useStore.getState().setSpeechLanguage(j.voice.chat_language);
           }
         }
-        if (j.vad) {
-          if (typeof j.vad.silence_threshold === "number") setVadSilenceThreshold(j.vad.silence_threshold);
-          if (typeof j.vad.silence_timeout_ms === "number") setVadSilenceTimeoutMs(j.vad.silence_timeout_ms);
-          if (typeof j.vad.min_recording_ms === "number") setVadMinRecordingMs(j.vad.min_recording_ms);
-          if (typeof j.vad.max_recording_ms === "number") setVadMaxRecordingMs(j.vad.max_recording_ms);
-          if (typeof j.vad.baseline_window_ms === "number") setVadBaselineWindowMs(j.vad.baseline_window_ms);
-          if (typeof j.vad.baseline_multiplier === "number") setVadBaselineMultiplier(j.vad.baseline_multiplier);
-          if (typeof j.vad.silero_threshold === "number") setVadSileroThreshold(j.vad.silero_threshold);
-          if (typeof j.vad.silero_min_silence_duration_ms === "number") setVadSileroMinSilenceMs(j.vad.silero_min_silence_duration_ms);
-          if (typeof j.vad.barge_in_multiplier === "number") setVadBargeInMultiplier(j.vad.barge_in_multiplier);
-          if (typeof j.vad.barge_in_floor === "number") setVadBargeInFloor(j.vad.barge_in_floor);
-          if (typeof j.vad.barge_in_sustain_ms === "number") setVadBargeInSustainMs(j.vad.barge_in_sustain_ms);
-          if (typeof j.vad.stt_coalesce_ms === "number") setVadSttCoalesceMs(j.vad.stt_coalesce_ms);
-          if (typeof j.vad.hallucination_filter_enabled === "boolean") setVadHallucinationFilter(j.vad.hallucination_filter_enabled);
-          if (typeof j.vad.filler_filter_enabled === "boolean") setVadFillerFilter(j.vad.filler_filter_enabled);
-        }
+        if (j.vad) setVad((cur) => vadApplyImported(cur, j.vad));
         if (j.ui) {
           if (j.ui.theme) setTheme(j.ui.theme);
           if (typeof j.ui.emoji === "boolean") setShowEmojis(j.ui.emoji);
@@ -831,20 +767,7 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
     setEdgeRate("-6%");
     setTtsVolume(0.9);
     setChatLanguage("en");
-    setVadSilenceThreshold(0.08);
-    setVadSilenceTimeoutMs(600);
-    setVadMinRecordingMs(500);
-    setVadMaxRecordingMs(8000);
-    setVadBaselineWindowMs(1200);
-    setVadBaselineMultiplier(2.2);
-    setVadSileroThreshold(0.5);
-    setVadSileroMinSilenceMs(500);
-    setVadBargeInMultiplier(3.5);
-    setVadBargeInFloor(0.15);
-    setVadBargeInSustainMs(250);
-    setVadSttCoalesceMs(500);
-    setVadHallucinationFilter(true);
-    setVadFillerFilter(true);
+    setVad(VAD_DEFAULTS);
     setTheme("jarvis");
     setShowEmojis(true);
     setShowStatusBar(true);
@@ -1934,7 +1857,7 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                           model: { provider, model, endpoint, max_tokens: maxTokens, temperature, fallback_provider: enableFallback ? fallbackProvider : null, fallback_model: enableFallback ? fallbackModel : null },
                           api_keys: apiKeys,
                           voice: { provider: voiceProvider, edge_voice: edgeVoiceAr, edge_voice_en: edgeVoiceEn, edge_rate: edgeRate, pyttsx3_volume: ttsVolume, chat_language: chatLanguage },
-                          vad: { silence_threshold: vadSilenceThreshold, silence_timeout_ms: vadSilenceTimeoutMs, min_recording_ms: vadMinRecordingMs, max_recording_ms: vadMaxRecordingMs, baseline_window_ms: vadBaselineWindowMs, baseline_multiplier: vadBaselineMultiplier, silero_threshold: vadSileroThreshold, silero_min_silence_duration_ms: vadSileroMinSilenceMs, barge_in_multiplier: vadBargeInMultiplier, barge_in_floor: vadBargeInFloor, barge_in_sustain_ms: vadBargeInSustainMs, stt_coalesce_ms: vadSttCoalesceMs, hallucination_filter_enabled: vadHallucinationFilter, filler_filter_enabled: vadFillerFilter },
+                          vad: vadToServer(vad),
                           ui: { theme, emoji: showEmojis, show_status_bar: showStatusBar, refresh_interval_ms: refreshInterval },
                           permissions: { mode: permMode },
                           integrations,
@@ -1988,22 +1911,7 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                                 setTtsVolume(imported.voice.pyttsx3_volume ?? 0.9);
                                 setChatLanguage(imported.voice.chat_language ?? "en");
                               }
-                              if (imported.vad) {
-                                setVadSilenceThreshold(imported.vad.silence_threshold ?? 0.08);
-                                setVadSilenceTimeoutMs(imported.vad.silence_timeout_ms ?? 600);
-                                setVadMinRecordingMs(imported.vad.min_recording_ms ?? 300);
-                                setVadMaxRecordingMs(imported.vad.max_recording_ms ?? 30000);
-                                setVadBaselineWindowMs(imported.vad.baseline_window_ms ?? 2000);
-                                setVadBaselineMultiplier(imported.vad.baseline_multiplier ?? 2.2);
-                                setVadSileroThreshold(imported.vad.silero_threshold ?? 0.5);
-                                setVadSileroMinSilenceMs(imported.vad.silero_min_silence_duration_ms ?? 500);
-                                setVadBargeInMultiplier(imported.vad.barge_in_multiplier ?? 3.0);
-                                setVadBargeInFloor(imported.vad.barge_in_floor ?? 0.15);
-                                setVadBargeInSustainMs(imported.vad.barge_in_sustain_ms ?? 120);
-                                setVadSttCoalesceMs(imported.vad.stt_coalesce_ms ?? 120);
-                                setVadHallucinationFilter(imported.vad.hallucination_filter_enabled ?? true);
-                                setVadFillerFilter(imported.vad.filler_filter_enabled ?? true);
-                              }
+                              if (imported.vad) setVad(vadFromServer(imported.vad));
                               if (imported.ui) {
                                 setTheme(imported.ui.theme ?? "jarvis");
                                 setShowEmojis(imported.ui.emoji ?? true);
@@ -2059,20 +1967,7 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                         setEdgeRate("-6%");
                         setTtsVolume(0.9);
                         setChatLanguage("en");
-                        setVadSilenceThreshold(0.08);
-                        setVadSilenceTimeoutMs(600);
-                        setVadMinRecordingMs(300);
-                        setVadMaxRecordingMs(30000);
-                        setVadBaselineWindowMs(2000);
-                        setVadBaselineMultiplier(2.2);
-                        setVadSileroThreshold(0.5);
-                        setVadSileroMinSilenceMs(500);
-                        setVadBargeInMultiplier(3.0);
-                        setVadBargeInFloor(0.15);
-                        setVadBargeInSustainMs(120);
-                        setVadSttCoalesceMs(120);
-                        setVadHallucinationFilter(true);
-                        setVadFillerFilter(true);
+                        setVad(vadFromServer({})); // table B: same fallbacks as load/import
                         setTheme("jarvis");
                         setShowEmojis(true);
                         setShowStatusBar(true);
@@ -3076,60 +2971,60 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                       <div className="space-y-2">
                         <label className="text-sm text-slate-300 flex items-center gap-1">
                           {t("sys_vad_silence_threshold")}
-                          <span className="text-xs text-slate-500">({vadSilenceThreshold.toFixed(2)})</span>
+                          <span className="text-xs text-slate-500">({vad.silenceThreshold.toFixed(2)})</span>
                         </label>
-                        <input type="range" min="0.01" max="1.0" step="0.01" value={vadSilenceThreshold}
-                          onChange={(e) => { setVadSilenceThreshold(parseFloat(e.target.value)); setDirty(true); }}
+                        <input type="range" min="0.01" max="1.0" step="0.01" value={vad.silenceThreshold}
+                          onChange={(e) => { patchVad({ silenceThreshold: parseFloat(e.target.value) }); setDirty(true); }}
                           className="w-full" />
                         <p className="text-xs text-slate-500">{t("sys_vad_silence_threshold_desc")}</p>
                       </div>
                       <div className="space-y-2">
                         <label className="text-sm text-slate-300 flex items-center gap-1">
                           {t("sys_vad_silence_timeout")}
-                          <span className="text-xs text-slate-500">({vadSilenceTimeoutMs}ms)</span>
+                          <span className="text-xs text-slate-500">({vad.silenceTimeoutMs}ms)</span>
                         </label>
-                        <input type="range" min="100" max="5000" step="50" value={vadSilenceTimeoutMs}
-                          onChange={(e) => { setVadSilenceTimeoutMs(parseInt(e.target.value)); setDirty(true); }}
+                        <input type="range" min="100" max="5000" step="50" value={vad.silenceTimeoutMs}
+                          onChange={(e) => { patchVad({ silenceTimeoutMs: parseInt(e.target.value) }); setDirty(true); }}
                           className="w-full" />
                         <p className="text-xs text-slate-500">{t("sys_vad_silence_timeout_desc")}</p>
                       </div>
                       <div className="space-y-2">
                         <label className="text-sm text-slate-300 flex items-center gap-1">
                           {t("sys_vad_min_recording")}
-                          <span className="text-xs text-slate-500">({vadMinRecordingMs}ms)</span>
+                          <span className="text-xs text-slate-500">({vad.minRecordingMs}ms)</span>
                         </label>
-                        <input type="range" min="100" max="5000" step="50" value={vadMinRecordingMs}
-                          onChange={(e) => { setVadMinRecordingMs(parseInt(e.target.value)); setDirty(true); }}
+                        <input type="range" min="100" max="5000" step="50" value={vad.minRecordingMs}
+                          onChange={(e) => { patchVad({ minRecordingMs: parseInt(e.target.value) }); setDirty(true); }}
                           className="w-full" />
                         <p className="text-xs text-slate-500">{t("sys_vad_min_recording_desc")}</p>
                       </div>
                       <div className="space-y-2">
                         <label className="text-sm text-slate-300 flex items-center gap-1">
                           {t("sys_vad_max_recording")}
-                          <span className="text-xs text-slate-500">({vadMaxRecordingMs}ms)</span>
+                          <span className="text-xs text-slate-500">({vad.maxRecordingMs}ms)</span>
                         </label>
-                        <input type="range" min="1000" max="30000" step="500" value={vadMaxRecordingMs}
-                          onChange={(e) => { setVadMaxRecordingMs(parseInt(e.target.value)); setDirty(true); }}
+                        <input type="range" min="1000" max="30000" step="500" value={vad.maxRecordingMs}
+                          onChange={(e) => { patchVad({ maxRecordingMs: parseInt(e.target.value) }); setDirty(true); }}
                           className="w-full" />
                         <p className="text-xs text-slate-500">{t("sys_vad_max_recording_desc")}</p>
                       </div>
                       <div className="space-y-2">
                         <label className="text-sm text-slate-300 flex items-center gap-1">
                           {t("sys_vad_baseline_window")}
-                          <span className="text-xs text-slate-500">({vadBaselineWindowMs}ms)</span>
+                          <span className="text-xs text-slate-500">({vad.baselineWindowMs}ms)</span>
                         </label>
-                        <input type="range" min="200" max="5000" step="100" value={vadBaselineWindowMs}
-                          onChange={(e) => { setVadBaselineWindowMs(parseInt(e.target.value)); setDirty(true); }}
+                        <input type="range" min="200" max="5000" step="100" value={vad.baselineWindowMs}
+                          onChange={(e) => { patchVad({ baselineWindowMs: parseInt(e.target.value) }); setDirty(true); }}
                           className="w-full" />
                         <p className="text-xs text-slate-500">{t("sys_vad_baseline_window_desc")}</p>
                       </div>
                       <div className="space-y-2">
                         <label className="text-sm text-slate-300 flex items-center gap-1">
                           {t("sys_vad_baseline_mult")}
-                          <span className="text-xs text-slate-500">({vadBaselineMultiplier.toFixed(1)}x)</span>
+                          <span className="text-xs text-slate-500">({vad.baselineMultiplier.toFixed(1)}x)</span>
                         </label>
-                        <input type="range" min="1.0" max="10.0" step="0.1" value={vadBaselineMultiplier}
-                          onChange={(e) => { setVadBaselineMultiplier(parseFloat(e.target.value)); setDirty(true); }}
+                        <input type="range" min="1.0" max="10.0" step="0.1" value={vad.baselineMultiplier}
+                          onChange={(e) => { patchVad({ baselineMultiplier: parseFloat(e.target.value) }); setDirty(true); }}
                           className="w-full" />
                         <p className="text-xs text-slate-500">{t("sys_vad_baseline_mult_desc")}</p>
                       </div>
@@ -3142,30 +3037,30 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                         <div className="space-y-2">
                           <label className="text-sm text-slate-300 flex items-center gap-1">
                             {t("sys_vad_barge_mult")}
-                            <span className="text-xs text-slate-500">({vadBargeInMultiplier.toFixed(1)}x)</span>
+                            <span className="text-xs text-slate-500">({vad.bargeInMultiplier.toFixed(1)}x)</span>
                           </label>
-                          <input type="range" min="1.0" max="10.0" step="0.1" value={vadBargeInMultiplier}
-                            onChange={(e) => { setVadBargeInMultiplier(parseFloat(e.target.value)); setDirty(true); }}
+                          <input type="range" min="1.0" max="10.0" step="0.1" value={vad.bargeInMultiplier}
+                            onChange={(e) => { patchVad({ bargeInMultiplier: parseFloat(e.target.value) }); setDirty(true); }}
                             className="w-full" />
                           <p className="text-xs text-slate-500">{t("sys_vad_barge_mult_desc")}</p>
                         </div>
                         <div className="space-y-2">
                           <label className="text-sm text-slate-300 flex items-center gap-1">
                             {t("sys_vad_barge_floor")}
-                            <span className="text-xs text-slate-500">({vadBargeInFloor.toFixed(2)})</span>
+                            <span className="text-xs text-slate-500">({vad.bargeInFloor.toFixed(2)})</span>
                           </label>
-                          <input type="range" min="0.01" max="1.0" step="0.01" value={vadBargeInFloor}
-                            onChange={(e) => { setVadBargeInFloor(parseFloat(e.target.value)); setDirty(true); }}
+                          <input type="range" min="0.01" max="1.0" step="0.01" value={vad.bargeInFloor}
+                            onChange={(e) => { patchVad({ bargeInFloor: parseFloat(e.target.value) }); setDirty(true); }}
                             className="w-full" />
                           <p className="text-xs text-slate-500">{t("sys_vad_barge_floor_desc")}</p>
                         </div>
                         <div className="space-y-2">
                           <label className="text-sm text-slate-300 flex items-center gap-1">
                             {t("sys_vad_barge_sustain")}
-                            <span className="text-xs text-slate-500">({vadBargeInSustainMs}ms)</span>
+                            <span className="text-xs text-slate-500">({vad.bargeInSustainMs}ms)</span>
                           </label>
-                          <input type="range" min="50" max="2000" step="10" value={vadBargeInSustainMs}
-                            onChange={(e) => { setVadBargeInSustainMs(parseInt(e.target.value)); setDirty(true); }}
+                          <input type="range" min="50" max="2000" step="10" value={vad.bargeInSustainMs}
+                            onChange={(e) => { patchVad({ bargeInSustainMs: parseInt(e.target.value) }); setDirty(true); }}
                             className="w-full" />
                           <p className="text-xs text-slate-500">{t("sys_vad_barge_sustain_desc")}</p>
                         </div>
@@ -3179,20 +3074,20 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                         <div className="space-y-2">
                           <label className="text-sm text-slate-300 flex items-center gap-1">
                             {t("sys_vad_silero_threshold")}
-                            <span className="text-xs text-slate-500">({vadSileroThreshold.toFixed(2)})</span>
+                            <span className="text-xs text-slate-500">({vad.sileroThreshold.toFixed(2)})</span>
                           </label>
-                          <input type="range" min="0.1" max="1.0" step="0.05" value={vadSileroThreshold}
-                            onChange={(e) => { setVadSileroThreshold(parseFloat(e.target.value)); setDirty(true); }}
+                          <input type="range" min="0.1" max="1.0" step="0.05" value={vad.sileroThreshold}
+                            onChange={(e) => { patchVad({ sileroThreshold: parseFloat(e.target.value) }); setDirty(true); }}
                             className="w-full" />
                           <p className="text-xs text-slate-500">{t("sys_vad_silero_threshold_desc")}</p>
                         </div>
                         <div className="space-y-2">
                           <label className="text-sm text-slate-300 flex items-center gap-1">
                             {t("sys_vad_silero_min_silence")}
-                            <span className="text-xs text-slate-500">({vadSileroMinSilenceMs}ms)</span>
+                            <span className="text-xs text-slate-500">({vad.sileroMinSilenceMs}ms)</span>
                           </label>
-                          <input type="range" min="50" max="3000" step="50" value={vadSileroMinSilenceMs}
-                            onChange={(e) => { setVadSileroMinSilenceMs(parseInt(e.target.value)); setDirty(true); }}
+                          <input type="range" min="50" max="3000" step="50" value={vad.sileroMinSilenceMs}
+                            onChange={(e) => { patchVad({ sileroMinSilenceMs: parseInt(e.target.value) }); setDirty(true); }}
                             className="w-full" />
                           <p className="text-xs text-slate-500">{t("sys_vad_silero_min_silence_desc")}</p>
                         </div>
@@ -3205,10 +3100,10 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                         <div className="space-y-2">
                           <label className="text-sm text-slate-300 flex items-center gap-1">
                             {t("sys_vad_stt_coalesce")}
-                            <span className="text-xs text-slate-500">({vadSttCoalesceMs}ms)</span>
+                            <span className="text-xs text-slate-500">({vad.sttCoalesceMs}ms)</span>
                           </label>
-                          <input type="range" min="50" max="5000" step="50" value={vadSttCoalesceMs}
-                            onChange={(e) => { setVadSttCoalesceMs(parseInt(e.target.value)); setDirty(true); }}
+                          <input type="range" min="50" max="5000" step="50" value={vad.sttCoalesceMs}
+                            onChange={(e) => { patchVad({ sttCoalesceMs: parseInt(e.target.value) }); setDirty(true); }}
                             className="w-full" />
                           <p className="text-xs text-slate-500">{t("sys_vad_stt_coalesce_desc")}</p>
                         </div>
@@ -3216,13 +3111,13 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                       <div className="flex flex-wrap gap-4">
                         <Toggle
                           label={t("sys_vad_hallucination_filter")}
-                          value={vadHallucinationFilter}
-                          onChange={(v) => { setVadHallucinationFilter(v); setDirty(true); }}
+                          value={vad.hallucinationFilter}
+                          onChange={(v) => { patchVad({ hallucinationFilter: v }); setDirty(true); }}
                         />
                         <Toggle
                           label={t("sys_vad_filler_filter")}
-                          value={vadFillerFilter}
-                          onChange={(v) => { setVadFillerFilter(v); setDirty(true); }}
+                          value={vad.fillerFilter}
+                          onChange={(v) => { patchVad({ fillerFilter: v }); setDirty(true); }}
                         />
                       </div>
                     </div>
@@ -3232,20 +3127,7 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                       <button
                         type="button"
                         onClick={() => {
-                          setVadSilenceThreshold(0.08);
-                          setVadSilenceTimeoutMs(600);
-                          setVadMinRecordingMs(500);
-                          setVadMaxRecordingMs(8000);
-                          setVadBaselineWindowMs(1200);
-                          setVadBaselineMultiplier(2.2);
-                          setVadSileroThreshold(0.5);
-                          setVadSileroMinSilenceMs(500);
-                          setVadBargeInMultiplier(3.5);
-                          setVadBargeInFloor(0.15);
-                          setVadBargeInSustainMs(250);
-                          setVadSttCoalesceMs(500);
-                          setVadHallucinationFilter(true);
-                          setVadFillerFilter(true);
+                          setVad(VAD_DEFAULTS);
                           setDirty(true);
                         }}
                         className="px-4 py-2 bg-slate-700 text-slate-300 rounded-lg hover:bg-slate-600 hover:text-white transition text-sm font-mono"
