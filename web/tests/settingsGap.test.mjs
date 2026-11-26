@@ -1,14 +1,25 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 
 // Static regression tests for the Settings UI gap fix (FG-001..FG-020).
 // They assert the markers the fix must leave in the source — no browser,
 // no backend — so they run with plain `node --test tests/`.
-const settings = readFileSync(
-  new URL("../src/components/HUD/Settings.tsx", import.meta.url),
-  "utf8"
-);
+//
+// The Settings panel is split across Settings.tsx and SettingsParts/*.tsx
+// (tabs/sections extracted from the original single file). The markers may
+// live in any of them, so the "source" under test is their concatenation.
+const hudDir = new URL("../src/components/HUD/", import.meta.url);
+const partsDir = new URL("SettingsParts/", hudDir);
+const settings = [
+  new URL("Settings.tsx", hudDir),
+  ...readdirSync(partsDir)
+    .filter((f) => /\.tsx?$/.test(f))
+    .sort()
+    .map((f) => new URL(f, partsDir)),
+]
+  .map((u) => readFileSync(u, "utf8"))
+  .join("\n");
 const api = readFileSync(new URL("../src/lib/api.ts", import.meta.url), "utf8");
 
 test("FG-001: omniroute (9Router) is present in every provider list", () => {
