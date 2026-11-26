@@ -9,9 +9,7 @@ import { useStore } from "../../../lib/store";
 import { useTranslations } from "../../../lib/i18n";
 import { getTools } from "../../../lib/api";
 import { ToolParams } from "./ui";
-import type { ToolItem } from "./constants";
-
-type Health = ReturnType<typeof useStore.getState>["health"];
+import type { Health, ToolItem } from "./constants";
 
 export interface ToolsTabProps {
   toolsList: ToolItem[];

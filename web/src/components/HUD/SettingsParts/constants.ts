@@ -3,6 +3,8 @@
  * Extracted verbatim from Settings.tsx (no logic changes).
  */
 
+import type { useStore } from "../../../lib/store";
+
 // ── Provider → endpoint map (mirrors backend _PROVIDER_ENDPOINTS) ───────────
 export const PROVIDER_ENDPOINTS: Record<string, string | null> = {
   // ── Core Cloud Providers ──────────────────────────────────────────────────
@@ -246,3 +248,9 @@ export interface ConfirmDialogState {
   text: string;
   onYes: () => void;
 }
+
+// App version shown in Settings → System → Diagnostics.
+export const APP_VERSION = "0.2.0";
+
+// Shape of the backend health snapshot kept in the global store.
+export type Health = ReturnType<typeof useStore.getState>["health"];
