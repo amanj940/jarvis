@@ -36,7 +36,6 @@ import {
   getVerifiedModels,
   authFetch,
 } from "../../lib/api";
-import { resetAllLayouts } from "./Floating";
 import AuthTab from "./AuthTab";
 import VaultTab from "./VaultTab";
 import {
@@ -49,11 +48,13 @@ import {
   type PlatformModalTarget,
   type McpServerItem,
   type McpPresetItem,
+  type ConfirmDialogState,
 } from "./SettingsParts/constants";
 import { Toggle, Row } from "./SettingsParts/ui";
 import ToolsTab from "./SettingsParts/ToolsTab";
 import IntegrationsTab from "./SettingsParts/IntegrationsTab";
 import McpTab from "./SettingsParts/McpTab";
+import SystemDisplaySection from "./SettingsParts/SystemDisplaySection";
 import MonitorTab from "./SettingsParts/MonitorTab";
 import PlatformDetailModal from "./SettingsParts/PlatformDetailModal";
 
@@ -106,7 +107,6 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
 
   // ── Language / i18n ───────────────────────────────────────────────────────
   const lang = useStore((s) => s.language);
-  const setLanguage = useStore((s) => s.setLanguage);
   const t = useTranslations(lang);
 
   const [activeTab, setActiveTab] = useState(normalizeTab(initialTab));
@@ -1378,7 +1378,7 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
   };
 
   // ── Confirm dialog state ──────────────────────────────────────────────────
-  const [confirmDialog, setConfirmDialog] = useState<{ text: string; onYes: () => void } | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
 
   const tabs = [
     { id: "ai",           label: t("tab_ai"),           icon: "🧠" },
@@ -3324,50 +3324,18 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
 
               {/* Display sub-tab */}
               {systemSubTab === "display" && (
-                <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-6 space-y-6">
-                  <div className="space-y-2">
-                    <label className="text-sm text-slate-300">{t("sys_interface_language")}</label>
-                    <select
-                      value={lang}
-                      onChange={(e) => setLanguage(e.target.value as Lang)}
-                      className="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-3 text-white"
-                    >
-                      <option value="en">{t("sys_interface_lang_en")}</option>
-                      <option value="ar">{t("sys_interface_lang_ar")}</option>
-                    </select>
-                  </div>
-                  <div className="space-y-4">
-                    <h3 className="text-sm font-semibold text-cyan-400">Layout</h3>
-                    <button
-                      onClick={() => setConfirmDialog({ text: "Reset all panel positions?", onYes: () => { resetAllLayouts(); setConfirmDialog(null); } })}
-                      className="w-full px-4 py-2 bg-slate-700 text-white rounded-lg hover:bg-slate-600 transition">
-                      Reset panel layout
-                    </button>
-                  </div>
-                  <div className="border-t border-slate-700 pt-4 space-y-4">
-                    <h3 className="text-sm font-semibold text-cyan-400">Appearance</h3>
-                    <div className="space-y-2">
-                      <label className="text-sm text-slate-300">Theme</label>
-                      <select value={theme} onChange={(e) => { setTheme(e.target.value); setDirty(true); }}
-                        className="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-3 text-white">
-                        <option value="jarvis">JARVIS (Default)</option>
-                        <option value="dark">Dark</option>
-                        <option value="light">Light</option>
-                      </select>
-                    </div>
-                    <Toggle label="Show emojis" value={showEmojis} onChange={(v) => { setShowEmojis(v); setDirty(true); }} />
-                    <Toggle label="Show status bar" value={showStatusBar} onChange={(v) => { setShowStatusBar(v); setDirty(true); }} />
-                  </div>
-                  <div className="border-t border-slate-700 pt-4 space-y-4">
-                    <h3 className="text-sm font-semibold text-cyan-400">Performance</h3>
-                    <div className="space-y-2">
-                      <label className="text-sm text-slate-300">Stats refresh interval (ms)</label>
-                      <input type="number" value={refreshInterval}
-                        onChange={(e) => { setRefreshInterval(parseInt(e.target.value) || 1500); setDirty(true); }}
-                        min="500" max="5000" className="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-3 text-white" />
-                    </div>
-                  </div>
-                </div>
+                <SystemDisplaySection
+                  theme={theme}
+                  setTheme={setTheme}
+                  showEmojis={showEmojis}
+                  setShowEmojis={setShowEmojis}
+                  showStatusBar={showStatusBar}
+                  setShowStatusBar={setShowStatusBar}
+                  refreshInterval={refreshInterval}
+                  setRefreshInterval={setRefreshInterval}
+                  setDirty={setDirty}
+                  setConfirmDialog={setConfirmDialog}
+                />
               )}
 
               {/* Diagnostics sub-tab */}

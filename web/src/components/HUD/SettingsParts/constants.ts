@@ -240,3 +240,9 @@ export interface McpPresetItem {
   already_configured: boolean;
   is_running: boolean;
 }
+
+// In-panel confirmation dialog (shared by several Settings sections).
+export interface ConfirmDialogState {
+  text: string;
+  onYes: () => void;
+}
