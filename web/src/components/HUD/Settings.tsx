@@ -52,6 +52,9 @@ import {
   type KeyPoolItem,
   type BenchmarkEntry,
   type RosterMember,
+  type OllamaStatus,
+  type VerifiedModelInfo,
+  type AiSubTab,
 } from "./SettingsParts/constants";
 import ToolsTab from "./SettingsParts/ToolsTab";
 import {
@@ -76,6 +79,7 @@ import SwarmSection from "./SettingsParts/SwarmSection";
 import ProvidersSection from "./SettingsParts/ProvidersSection";
 import CouncilSection from "./SettingsParts/CouncilSection";
 import BrainConfigPanel from "./SettingsParts/BrainConfigPanel";
+import InferenceProviderSection from "./SettingsParts/InferenceProviderSection";
 import SystemDiagnosticsSection from "./SettingsParts/SystemDiagnosticsSection";
 import SystemDataSection from "./SettingsParts/SystemDataSection";
 import MonitorTab from "./SettingsParts/MonitorTab";
@@ -108,18 +112,12 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
   const t = useTranslations(lang);
 
   const [activeTab, setActiveTab] = useState(normalizeTab(initialTab));
-  const [aiSubTab, setAiSubTab] = useState<"inference" | "providers" | "council" | "swarm">(
+  const [aiSubTab, setAiSubTab] = useState<AiSubTab>(
     initialTab === "providers" ? "providers" : "inference"
   );
 
   // ── Ollama Service Control state ───────────────────────────────────────────
-  const [ollamaStatus, setOllamaStatus] = useState<{
-    running: boolean;
-    systemd_active: boolean;
-    reachable: boolean;
-    models: string[];
-    model_count: number;
-  } | null>(null);
+  const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
   const [ollamaLoading, setOllamaLoading] = useState(false);
   const [ollamaPullModel, setOllamaPullModel] = useState("");
   const [ollamaPullMsg, setOllamaPullMsg] = useState("");
@@ -231,7 +229,7 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
   const [fallbackModel, setFallbackModel] = useState("gemini-2.0-flash");
 
   // ── Model Verification Status state ───────────────────────────────────────
-  const [verifiedModels, setVerifiedModels] = useState<Record<string, { status: string; latency_ms: number | null; last_tested: string }>>({});
+  const [verifiedModels, setVerifiedModels] = useState<Record<string, VerifiedModelInfo>>({});
 
   // ── Cascade Status state (shared between Inference and Monitor tabs) ─────────
   const [cascadeInfo, setCascadeInfo] = useState<{
@@ -765,32 +763,6 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
   };
 
 
-  // ── Provider change: update models + endpoint hint ───────────────────────
-  const onProviderChange = useCallback((prov: string) => {
-    setProvider(prov);
-    const defaults = PREDEFINED_MODELS[prov] || [];
-    setAvailableModels(defaults);
-    if (defaults.length > 0) {
-      setModel(defaults[0]);
-    }
-    setModelsFetched(false);
-    setKeyValid(null);
-    setModelError(null);
-    setIsCustomModel(false);
-    setDirty(true);
-    const ep = PROVIDER_ENDPOINTS[prov];
-    if (ep) setEndpoint(ep);
-    setApiKeyInput("");
-    const key = (apiKeys[prov] || "").trim();
-    const finalEp = ep || endpoint;
-    // Always fetch models for cloud providers (KeyManager will supply the key)
-    if (prov === "openai_compatible") {
-      if (finalEp) fetchModels(prov, "", finalEp);
-    } else if (apiKeyStatus[prov] || keyPools[prov]?.length > 0) {
-      fetchModels(prov, "", finalEp); // Let backend use KeyManager
-    }
-  }, [apiKeys, apiKeyStatus, endpoint, fetchModels, keyPools]);
-
   // ── Auto-fetch when API key changes (debounced, cloud providers) ─────────
   const [apiKeyInput, setApiKeyInput] = useState("");
   const [keyValid, setKeyValid] = useState<boolean | null>(null); // null = not tested, true = valid, false = invalid
@@ -1222,59 +1194,24 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
               {aiSubTab === "inference" && (
                 <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-6 space-y-6">
                   {/* 1. Provider */}
-                  <div className="space-y-2">
-                    <label className="text-sm text-slate-300">Provider</label>
-                    <select
-                      value={provider}
-                      onChange={(e) => onProviderChange(e.target.value)}
-                      className="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-3 text-white"
-                    >
-                      <optgroup label="⚡ Core Cloud Providers">
-                        <option value="groq">Groq — Fastest Cloud Inference</option>
-                        <option value="gemini">Google Gemini</option>
-                        <option value="openai">OpenAI (GPT)</option>
-                        <option value="anthropic">Anthropic (Claude)</option>
-                        <option value="openrouter">OpenRouter — Multi-Provider Gateway</option>
-                        <option value="deepseek">DeepSeek</option>
-                        <option value="nvidia">NVIDIA NIM</option>
-                        <option value="mistral">Mistral AI</option>
-                        <option value="cerebras">Cerebras</option>
-                        <option value="sambanova">SambaNova</option>
-                        <option value="cohere">Cohere</option>
-                        <option value="xai">xAI (Grok)</option>
-                      </optgroup>
-                      <optgroup label="🌐 Extended Cloud Providers">
-                        <option value="together">Together AI</option>
-                        <option value="deepinfra">DeepInfra</option>
-                        <option value="siliconflow">SiliconFlow</option>
-                        <option value="nebius">Nebius</option>
-                        <option value="fireworks">Fireworks AI</option>
-                        <option value="novita">Novita AI</option>
-                        <option value="huggingface">Hugging Face</option>
-                        <option value="alibaba_cloud">Alibaba (Qwen)</option>
-                        <option value="minimax">MiniMax</option>
-                        <option value="kimi">Kimi (Moonshot)</option>
-                        <option value="scaleway">Scaleway</option>
-                        <option value="bedrock">Amazon Bedrock</option>
-                        <option value="chutes">Chutes AI</option>
-                        <option value="featherless">Featherless AI</option>
-                        <option value="wandb">W&B Inference</option>
-                        <option value="vercel_ai">Vercel AI Gateway</option>
-                        <option value="ollama_cloud">Ollama Cloud</option>
-                      </optgroup>
-                      <optgroup label="🆓 Free / No-Key Providers">
-                        <option value="kilo">Kilo Gateway — 200 req/hr free</option>
-                        <option value="pollinations">Pollinations — Unlimited free</option>
-                        <option value="ovhcloud">OVHcloud AI — Free Qwen/Llama</option>
-                        <option value="omniroute">9Router Proxy — Local Free Aggregator</option>
-                      </optgroup>
-                      <optgroup label="🏠 Local Providers">
-                        <option value="ollama">Ollama (Local)</option>
-                        <option value="lmstudio">LM Studio (Local)</option>
-                        <option value="openai_compatible">Custom OpenAI-Compatible</option>
-                      </optgroup>
-                    </select>
-                  </div>
+                  <InferenceProviderSection
+                    apiKeyStatus={apiKeyStatus}
+                    apiKeys={apiKeys}
+                    endpoint={endpoint}
+                    fetchModels={fetchModels}
+                    keyPools={keyPools}
+                    provider={provider}
+                    setApiKeyInput={setApiKeyInput}
+                    setAvailableModels={setAvailableModels}
+                    setDirty={setDirty}
+                    setEndpoint={setEndpoint}
+                    setIsCustomModel={setIsCustomModel}
+                    setKeyValid={setKeyValid}
+                    setModel={setModel}
+                    setModelError={setModelError}
+                    setModelsFetched={setModelsFetched}
+                    setProvider={setProvider}
+                  />
 
                   {/* ── Ollama Service Control Card ── */}
                   {provider === "ollama" && (

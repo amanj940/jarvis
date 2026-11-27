@@ -292,3 +292,23 @@ export interface RosterMember {
   specialty: string;
   active: boolean;
 }
+
+// GET /api/ollama/status snapshot (AI > Inference).
+export interface OllamaStatus {
+  running: boolean;
+  systemd_active: boolean;
+  reachable: boolean;
+  models: string[];
+  model_count: number;
+}
+
+// Result of a model health probe, keyed by model id (AI > Inference).
+export interface VerifiedModelInfo {
+  status: string;
+  latency_ms: number | null;
+  last_tested: string;
+}
+
+// Sub-tabs of the AI tab.
+export type AiSubTab = "inference" | "providers" | "council" | "swarm";
+
