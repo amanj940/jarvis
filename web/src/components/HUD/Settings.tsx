@@ -79,6 +79,7 @@ import SwarmSection from "./SettingsParts/SwarmSection";
 import ProvidersSection from "./SettingsParts/ProvidersSection";
 import CouncilSection from "./SettingsParts/CouncilSection";
 import BrainConfigPanel from "./SettingsParts/BrainConfigPanel";
+import InferenceEndpointField from "./SettingsParts/InferenceEndpointField";
 import InferenceKeyBanner from "./SettingsParts/InferenceKeyBanner";
 import InferenceOllamaCard from "./SettingsParts/InferenceOllamaCard";
 import InferenceProviderSection from "./SettingsParts/InferenceProviderSection";
@@ -1235,16 +1236,12 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                   />
 
                   {/* Endpoint */}
-                  <div className="space-y-2">
-                    <label className="text-sm text-slate-300">Endpoint {provider === "openai_compatible" ? "" : "(auto-filled)"}</label>
-                    <input
-                      type="text"
-                      value={endpoint}
-                      onChange={(e) => { setEndpoint(e.target.value); setDirty(true); }}
-                      placeholder="https://api.example.com/v1"
-                      className="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-3 text-white"
-                    />
-                  </div>
+                  <InferenceEndpointField
+                    endpoint={endpoint}
+                    provider={provider}
+                    setDirty={setDirty}
+                    setEndpoint={setEndpoint}
+                  />
 
                   {/* Model Name */}
                   <div className="space-y-2">
