@@ -55,6 +55,13 @@ import {
 } from "./SettingsParts/constants";
 import { Toggle } from "./SettingsParts/ui";
 import ToolsTab from "./SettingsParts/ToolsTab";
+import {
+  BRAIN_DEFAULTS,
+  brainMergeImported,
+  brainMergeLoaded,
+  brainToServer,
+  type BrainConfig,
+} from "./SettingsParts/brainConfig";
 import VadCalibrationPanel from "./SettingsParts/VadCalibrationPanel";
 import {
   VAD_DEFAULTS,
@@ -272,13 +279,10 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
     } catch { /* ignore */ }
   };
 
-  // ── Brain / Ultimate Config state ──────────────────────────────────────
-  const [brainSemanticMemory, setBrainSemanticMemory] = useState(true);
-  const [brainEmbedModel, setBrainEmbedModel] = useState("text-embedding-004");
-  const [brainRecallK, setBrainRecallK] = useState(5);
-  const [brainAutoRemember, setBrainAutoRemember] = useState(true);
-  const [brainCompactionTrigger, setBrainCompactionTrigger] = useState(28);
-  const [brainCompactionKeep, setBrainCompactionKeep] = useState(12);
+  // ── Brain / Ultimate Config state — one object; field list, wire names and merge
+  // rules live in SettingsParts/brainConfig.ts ───────────────────────────────────
+  const [brain, setBrain] = useState<BrainConfig>(BRAIN_DEFAULTS);
+  const patchBrain = (patch: Partial<BrainConfig>) => setBrain((b) => ({ ...b, ...patch }));
 
   // Provider config modal state (Providers tab)
   const [providerConfigModal, setProviderConfigModal] = useState<string | null>(null);
@@ -466,14 +470,7 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
             },
           }));
         }
-        if (j.ultimate) {
-          if (j.ultimate.semantic_memory !== undefined) setBrainSemanticMemory(j.ultimate.semantic_memory);
-          if (j.ultimate.embed_model) setBrainEmbedModel(j.ultimate.embed_model);
-          if (j.ultimate.recall_k !== undefined) setBrainRecallK(j.ultimate.recall_k);
-          if (j.ultimate.auto_remember !== undefined) setBrainAutoRemember(j.ultimate.auto_remember);
-          if (j.ultimate.compaction_trigger_messages !== undefined) setBrainCompactionTrigger(j.ultimate.compaction_trigger_messages);
-          if (j.ultimate.compaction_keep_recent !== undefined) setBrainCompactionKeep(j.ultimate.compaction_keep_recent);
-        }
+        if (j.ultimate) setBrain((cur) => brainMergeLoaded(cur, j.ultimate));
         if (j.plugins) {
           setPluginsMap(j.plugins);
           setPluginsLoaded(true);
@@ -568,14 +565,7 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
           },
           integrations,
           plugins: pluginsMap,
-          ultimate: {
-            semantic_memory: brainSemanticMemory,
-            embed_model: brainEmbedModel,
-            recall_k: brainRecallK,
-            auto_remember: brainAutoRemember,
-            compaction_trigger_messages: brainCompactionTrigger,
-            compaction_keep_recent: brainCompactionKeep,
-          },
+          ultimate: brainToServer(brain),
         }),
       });
       const data = await resp.json();
@@ -634,14 +624,7 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
       // permissions intentionally excluded from export/import/reset (FG-019/020)
       integrations,
       plugins: pluginsMap,
-      ultimate: {
-        semantic_memory: brainSemanticMemory,
-        embed_model: brainEmbedModel,
-        recall_k: brainRecallK,
-        auto_remember: brainAutoRemember,
-        compaction_trigger_messages: brainCompactionTrigger,
-        compaction_keep_recent: brainCompactionKeep,
-      },
+      ultimate: brainToServer(brain),
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -693,14 +676,7 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
         if (j.permissions?.mode) setPermMode(j.permissions.mode);
         if (j.integrations) setIntegrations((prev) => ({ ...prev, ...j.integrations }));
         if (j.plugins) setPluginsMap(j.plugins);
-        if (j.ultimate) {
-          if (typeof j.ultimate.semantic_memory === "boolean") setBrainSemanticMemory(j.ultimate.semantic_memory);
-          if (j.ultimate.embed_model) setBrainEmbedModel(j.ultimate.embed_model);
-          if (typeof j.ultimate.recall_k === "number") setBrainRecallK(j.ultimate.recall_k);
-          if (typeof j.ultimate.auto_remember === "boolean") setBrainAutoRemember(j.ultimate.auto_remember);
-          if (typeof j.ultimate.compaction_trigger_messages === "number") setBrainCompactionTrigger(j.ultimate.compaction_trigger_messages);
-          if (typeof j.ultimate.compaction_keep_recent === "number") setBrainCompactionKeep(j.ultimate.compaction_keep_recent);
-        }
+        if (j.ultimate) setBrain((cur) => brainMergeImported(cur, j.ultimate));
         setDirty(true);
         pushToast("Settings imported — review and press Save to apply");
       } catch {
@@ -743,12 +719,7 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
       tiktok: { client_key: "", client_secret: "", access_token: "", open_id: "", enabled: false },
       social_platforms: {},
     });
-    setBrainSemanticMemory(true);
-    setBrainEmbedModel("text-embedding-004");
-    setBrainRecallK(5);
-    setBrainAutoRemember(true);
-    setBrainCompactionTrigger(28);
-    setBrainCompactionKeep(12);
+    setBrain(BRAIN_DEFAULTS);
     setDirty(true);
     pushToast("Settings reset to defaults — press Save to apply");
   };
@@ -1745,7 +1716,7 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                           permissions: { mode: permMode },
                           integrations,
                           plugins: pluginsMap,
-                          ultimate: { semantic_memory: brainSemanticMemory, embed_model: brainEmbedModel, recall_k: brainRecallK, auto_remember: brainAutoRemember, compaction_trigger_messages: brainCompactionTrigger, compaction_keep_recent: brainCompactionKeep },
+                          ultimate: brainToServer(brain),
                         };
                         const blob = new Blob([JSON.stringify(configData, null, 2)], { type: "application/json" });
                         const url = URL.createObjectURL(blob);
@@ -1810,14 +1781,7 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                               if (imported.plugins) {
                                 setPluginsMap(imported.plugins);
                               }
-                              if (imported.ultimate) {
-                                if (imported.ultimate.semantic_memory !== undefined) setBrainSemanticMemory(imported.ultimate.semantic_memory);
-                                if (imported.ultimate.embed_model) setBrainEmbedModel(imported.ultimate.embed_model);
-                                if (imported.ultimate.recall_k !== undefined) setBrainRecallK(imported.ultimate.recall_k);
-                                if (imported.ultimate.auto_remember !== undefined) setBrainAutoRemember(imported.ultimate.auto_remember);
-                                if (imported.ultimate.compaction_trigger_messages !== undefined) setBrainCompactionTrigger(imported.ultimate.compaction_trigger_messages);
-                                if (imported.ultimate.compaction_keep_recent !== undefined) setBrainCompactionKeep(imported.ultimate.compaction_keep_recent);
-                              }
+                              if (imported.ultimate) setBrain((cur) => brainMergeLoaded(cur, imported.ultimate));
                               setDirty(true);
                               pushToast("Settings imported successfully");
                             } catch (err) {
@@ -1868,12 +1832,7 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                           social_platforms: {},
                         });
                         setPluginsMap({});
-                        setBrainSemanticMemory(true);
-                        setBrainEmbedModel("text-embedding-004");
-                        setBrainRecallK(5);
-                        setBrainAutoRemember(true);
-                        setBrainCompactionTrigger(28);
-                        setBrainCompactionKeep(12);
+                        setBrain(BRAIN_DEFAULTS);
                         setDirty(true);
                         pushToast("Settings reset to defaults");
                       }}
@@ -1903,8 +1862,8 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                       <p className="text-xs text-slate-400 mt-0.5">يستدعي JARVIS ذكريات ذات صلة من الجلسات السابقة عند كل سؤال</p>
                     </div>
                     <label className="relative inline-flex items-center cursor-pointer">
-                      <input type="checkbox" checked={brainSemanticMemory}
-                        onChange={(e) => { setBrainSemanticMemory(e.target.checked); setDirty(true); }} className="sr-only peer" />
+                      <input type="checkbox" checked={brain.semanticMemory}
+                        onChange={(e) => { patchBrain({ semanticMemory: e.target.checked }); setDirty(true); }} className="sr-only peer" />
                       <div className="w-11 h-6 bg-slate-700 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600" />
                     </label>
                   </div>
@@ -1916,8 +1875,8 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                       <p className="text-xs text-slate-400 mt-0.5">يحفظ JARVIS نقاط المعلومات المهمة تلقائياً في الذاكرة طويلة الأمد</p>
                     </div>
                     <label className="relative inline-flex items-center cursor-pointer">
-                      <input type="checkbox" checked={brainAutoRemember}
-                        onChange={(e) => { setBrainAutoRemember(e.target.checked); setDirty(true); }} className="sr-only peer" />
+                      <input type="checkbox" checked={brain.autoRemember}
+                        onChange={(e) => { patchBrain({ autoRemember: e.target.checked }); setDirty(true); }} className="sr-only peer" />
                       <div className="w-11 h-6 bg-slate-700 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600" />
                     </label>
                   </div>
@@ -1928,8 +1887,8 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                       <span>🔮</span> نموذج التضمين (Embedding Model)
                     </label>
                     <select
-                      value={brainEmbedModel}
-                      onChange={(e) => { setBrainEmbedModel(e.target.value); setDirty(true); }}
+                      value={brain.embedModel}
+                      onChange={(e) => { patchBrain({ embedModel: e.target.value }); setDirty(true); }}
                       className="w-full bg-slate-900 border border-indigo-500/40 rounded-lg px-4 py-3 text-white text-sm"
                     >
                       <optgroup label="Google Gemini (Recommended)">
@@ -1956,8 +1915,8 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                       </label>
                       <input
                         type="number"
-                        value={brainRecallK}
-                        onChange={(e) => { setBrainRecallK(parseInt(e.target.value) || 5); setDirty(true); }}
+                        value={brain.recallK}
+                        onChange={(e) => { patchBrain({ recallK: parseInt(e.target.value) || 5 }); setDirty(true); }}
                         min={1} max={20}
                         className="w-full bg-slate-900 border border-indigo-500/40 rounded-lg px-3 py-2 text-white text-sm font-mono"
                       />
@@ -1969,8 +1928,8 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                       </label>
                       <input
                         type="number"
-                        value={brainCompactionTrigger}
-                        onChange={(e) => { setBrainCompactionTrigger(parseInt(e.target.value) || 28); setDirty(true); }}
+                        value={brain.compactionTrigger}
+                        onChange={(e) => { patchBrain({ compactionTrigger: parseInt(e.target.value) || 28 }); setDirty(true); }}
                         min={8} max={100}
                         className="w-full bg-slate-900 border border-indigo-500/40 rounded-lg px-3 py-2 text-white text-sm font-mono"
                       />
@@ -1982,8 +1941,8 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                       </label>
                       <input
                         type="number"
-                        value={brainCompactionKeep}
-                        onChange={(e) => { setBrainCompactionKeep(parseInt(e.target.value) || 12); setDirty(true); }}
+                        value={brain.compactionKeep}
+                        onChange={(e) => { patchBrain({ compactionKeep: parseInt(e.target.value) || 12 }); setDirty(true); }}
                         min={4} max={50}
                         className="w-full bg-slate-900 border border-indigo-500/40 rounded-lg px-3 py-2 text-white text-sm font-mono"
                       />
