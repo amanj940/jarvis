@@ -79,6 +79,7 @@ import SwarmSection from "./SettingsParts/SwarmSection";
 import ProvidersSection from "./SettingsParts/ProvidersSection";
 import CouncilSection from "./SettingsParts/CouncilSection";
 import BrainConfigPanel from "./SettingsParts/BrainConfigPanel";
+import InferenceParameters from "./SettingsParts/InferenceParameters";
 import InferenceModelField from "./SettingsParts/InferenceModelField";
 import InferenceEndpointField from "./SettingsParts/InferenceEndpointField";
 import InferenceKeyBanner from "./SettingsParts/InferenceKeyBanner";
@@ -1263,20 +1264,13 @@ export default function Settings({ onClose, initialTab }: SettingsProps) {
                   />
 
                   {/* Parameters */}
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <label className="text-sm text-slate-300">Max Tokens</label>
-                      <input type="number" value={maxTokens}
-                        onChange={(e) => { setMaxTokens(parseInt(e.target.value) || 0); setDirty(true); }}
-                        min="1" max="8192" className="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-3 text-white" />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-sm text-slate-300">Temperature (0–2)</label>
-                      <input type="number" value={temperature}
-                        onChange={(e) => { setTemperature(parseFloat(e.target.value) || 0); setDirty(true); }}
-                        min="0" max="2" step="0.1" className="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-3 text-white" />
-                    </div>
-                  </div>
+                  <InferenceParameters
+                    maxTokens={maxTokens}
+                    setDirty={setDirty}
+                    setMaxTokens={setMaxTokens}
+                    setTemperature={setTemperature}
+                    temperature={temperature}
+                  />
 
                   {/* Fallback chain */}
                   <div className="space-y-3 bg-slate-900/60 border border-slate-700/60 rounded-xl p-4">
